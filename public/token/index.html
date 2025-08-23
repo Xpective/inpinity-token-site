@@ -1,3 +1,87 @@
+<!-- Pfad: public/token/index.html -->
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Inpinity Token (inpi) — Offizielles Zahlungsmittel</title>
+  <meta name="description" content="Offizielles Zahlungsmittel des Inpinity-Ökosystems. Presale in USDC, Start-Pool INPI/USDC, LP-Lock.">
+  <link rel="icon" href="/token/inpi.png" />
+  <meta property="og:title" content="Inpinity Token (inpi)" />
+  <meta property="og:description" content="Offizielles Zahlungsmittel des Inpinity-Ökosystems." />
+  <meta property="og:image" content="https://inpinity.online/token/inpi.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="stylesheet" href="/token/styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">
+      <img src="/token/inpi.png" alt="INPI" class="logo" />
+      <div>
+        <h1>Inpinity Token <span class="ticker">(inpi)</span></h1>
+        <p class="sub">Offizielles Zahlungsmittel des Inpinity-Ökosystems</p>
+      </div>
+    </div>
+    <button id="btnConnect" class="btn primary">Mit Phantom verbinden</button>
+  </header>
 
-cd /workspaces/inpinity-token-site
-mkdir -p public/token public/assets
+  <main class="container">
+    <section class="card">
+      <h2>Status</h2>
+      <div class="grid two">
+        <div>
+          <div class="kv"><span>Wallet:</span><code id="walletAddr">–</code></div>
+          <div class="kv"><span>USDC:</span><span id="usdcBal">–</span></div>
+          <div class="kv"><span>INPI:</span><span id="inpiBal">–</span></div>
+        </div>
+        <div>
+          <div class="kv"><span>Presale:</span><span id="presaleState">lädt…</span></div>
+          <div class="kv"><span>TGE:</span><span id="tgeTime">–</span></div>
+          <div class="kv"><span>Startpreis P₀:</span><span id="p0">0.0001 USDC</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>USDC-Presale</h2>
+      <p>Nur USDC. Per-Wallet-Cap & Discount gelten. Deine Einzahlung wird on-chain getrackt.</p>
+      <div class="grid three">
+        <label class="field">
+          <span>Betrag (USDC)</span>
+          <input id="inpAmount" type="number" min="1" step="1" placeholder="z. B. 100" />
+        </label>
+        <label class="field">
+          <span>Effektiver Preis</span>
+          <input id="inpPrice" type="text" value="0.00009 USDC/INPI" disabled />
+        </label>
+        <div class="field">
+          <span>Erwartete INPI</span>
+          <div id="expectedInpi" class="big">–</div>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="btnPresaleIntent" class="btn">Presale-Intent prüfen</button>
+        <button id="btnHowTo" class="btn ghost">Wie funktioniert’s?</button>
+      </div>
+      <div id="intentMsg" class="note"></div>
+    </section>
+
+    <section class="card">
+      <h2>Dokumente & Metadaten</h2>
+      <ul class="bullets">
+        <li><a href="/token/inpi.json" target="_blank" rel="noopener">Token-Metadaten (inpi.json)</a></li>
+        <li><a href="https://inpinity.online/token#docs" target="_blank" rel="noopener">Kurz-Docs</a></li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <small>© Inpinity. Kein Wertpapier; reiner Utility-Token.</small>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/buffer@6.0.3/index.min.js"></script>
+  <script>window.Buffer = window.Buffer || buffer.Buffer;</script>
+  <script src="/token/app.js"></script>
+</body>
+</html>

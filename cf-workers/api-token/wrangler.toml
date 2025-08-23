@@ -1,0 +1,13 @@
+name = "api-token"
+main = "worker.js"
+compatibility_date = "2024-12-01"
+
+routes = [
+  { pattern = "inpinity.online/api/token/*", zone_name = "inpinity.online" }
+]
+
+kv_namespaces = [
+  { binding = "CONFIG",  id = "<ee57d3036a25f352ab089a94066a03c1>"  },
+  { binding = "PRESALE", id = "<c7fe71ba6bd54e2a9ce76ed9c726a75d>" },
+  { binding = "CLAIMS",  id = "<485fc6ed252b445ba8ca18aaa9038e5c>"  }
+]
