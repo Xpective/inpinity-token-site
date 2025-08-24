@@ -1,10 +1,22 @@
+// INPI Admin Worker (Basic + optional TOTP, Cron-Proxies, Config-API)
+// Bindings/Secrets:
+// - KV: CONFIG (required), OPS (optional für Audit)
+// - Secrets: ADMIN_USER, ADMIN_PASS
+// - Optional Secrets: ADMIN_TOTP_SECRET, ADMIN_TOTP_PERIOD, ADMIN_TOTP_WINDOW
+// - ENV/Secret: CRON_BASE (z.B. https://inpinity.online/cron), OPS_API_KEY
+// - Optional: IP_ALLOWLIST (CSV), CONFIG_KEYS (CSV Whitelist)
+
 export default {
   async fetch(req, env) {
     // Basic + IP-Check
     if (!basicOk(req, env) || !ipOk(req, env)) {
       return new Response("Unauthorized", {
         status: 401,
-        headers: { "WWW-Authenticate": `Basic realm="${env.ADMIN_REALM||'Admin'}"`, ...secHeaders(), "x-require-otp":"1" }
+        headers: {
+          "WWW-Authenticate": `Basic realm="${env.ADMIN_REALM || "Admin"}"`,
+          ...secHeaders(),
+          "x-require-otp": "1"
+        }
       });
     }
 
@@ -21,76 +33,82 @@ export default {
         digits: 6,
         algo: "SHA-1"
       });
-      if (!ok) return J({ ok:false, error:"bad_otp" }, 401, { "x-require-otp":"1" });
+      if (!ok) return J({ ok: false, error: "bad_otp" }, 401, { "x-require-otp": "1" });
     }
 
     // UI
     if (req.method === "GET" && p === "/admin") return ui(env);
 
-    // -------- CONFIG API (wie gehabt, aber beibehalten) --------
+    // -------- CONFIG API --------
     if (req.method === "GET" && p === "/admin/config") {
       const qKey = url.searchParams.get("key");
       if (qKey) {
         const v = await env.CONFIG.get(qKey);
-        return J({ ok:true, key: qKey, value: v });
+        return J({ ok: true, key: qKey, value: v });
       }
       const keys = getConfigKeys(env);
       const out = {};
-      await Promise.all(keys.map(async k => { out[k] = await env.CONFIG.get(k); }));
-      return J({ ok:true, keys, values: out });
+      await Promise.all(keys.map(async (k) => (out[k] = await env.CONFIG.get(k))));
+      return J({ ok: true, keys, values: out });
     }
 
     if (req.method === "GET" && p === "/admin/config/keys") {
-      return J({ ok:true, keys: getConfigKeys(env) });
+      return J({ ok: true, keys: getConfigKeys(env) });
     }
 
     if (req.method === "POST" && p === "/admin/config/set") {
-      await requireJson(req);
-      const { key, value } = await req.json().catch(()=> ({}));
-      if (!keyAllowed(env, key)) return J({ ok:false, error:"key_not_allowed" }, 403);
+      if (!(await requireJson(req))) return badCT();
+      const { key, value } = await req.json().catch(() => ({}));
+      if (!keyAllowed(env, key)) return J({ ok: false, error: "key_not_allowed" }, 403);
       await env.CONFIG.put(String(key), String(value ?? ""));
       await audit(env, "config_set", { key });
-      return J({ ok:true });
+      return J({ ok: true });
     }
 
     if (req.method === "POST" && p === "/admin/config/setmany") {
-      await requireJson(req);
-      const { entries } = await req.json().catch(()=> ({}));
-      if (!entries || typeof entries !== "object") return J({ ok:false, error:"entries_object_required" }, 400);
-      for (const [k] of Object.entries(entries)) if (!keyAllowed(env, k)) return J({ ok:false, error:`key_not_allowed:${k}` }, 403);
-      await Promise.all(Object.entries(entries).map(([k,v]) => env.CONFIG.put(String(k), String(v ?? ""))));
+      if (!(await requireJson(req))) return badCT();
+      const { entries } = await req.json().catch(() => ({}));
+      if (!entries || typeof entries !== "object") return J({ ok: false, error: "entries_object_required" }, 400);
+      for (const [k] of Object.entries(entries)) {
+        if (!keyAllowed(env, k)) return J({ ok: false, error: `key_not_allowed:${k}` }, 403);
+      }
+      await Promise.all(Object.entries(entries).map(([k, v]) => env.CONFIG.put(String(k), String(v ?? ""))));
       await audit(env, "config_setmany", { count: Object.keys(entries).length });
-      return J({ ok:true });
+      return J({ ok: true });
     }
 
     if (req.method === "POST" && p === "/admin/config/delete") {
-      await requireJson(req);
-      const { key } = await req.json().catch(()=> ({}));
-      if (!keyAllowed(env, key)) return J({ ok:false, error:"key_not_allowed" }, 403);
+      if (!(await requireJson(req))) return badCT();
+      const { key } = await req.json().catch(() => ({}));
+      if (!keyAllowed(env, key)) return J({ ok: false, error: "key_not_allowed" }, 403);
       await env.CONFIG.delete(key);
       await audit(env, "config_delete", { key });
-      return J({ ok:true });
+      return J({ ok: true });
     }
 
     if (req.method === "GET" && p === "/admin/config/export") {
       const keys = getConfigKeys(env);
       const out = {};
-      await Promise.all(keys.map(async k => { out[k] = await env.CONFIG.get(k); }));
+      await Promise.all(keys.map(async (k) => (out[k] = await env.CONFIG.get(k))));
       return new Response(JSON.stringify({ ts: Date.now(), values: out }, null, 2), {
-        headers: { "content-type":"application/json", "content-disposition":"attachment; filename=inpi-config-export.json", ...secHeaders() }
+        headers: {
+          "content-type": "application/json",
+          "content-disposition": "attachment; filename=inpi-config-export.json",
+          ...secHeaders()
+        }
       });
     }
 
     if (req.method === "POST" && p === "/admin/config/import") {
-      await requireJson(req);
-      const { values } = await req.json().catch(()=> ({}));
-      if (!values || typeof values !== "object") return J({ ok:false, error:"values_object_required" }, 400);
+      if (!(await requireJson(req))) return badCT();
+      const { values } = await req.json().catch(() => ({}));
+      if (!values || typeof values !== "object") return J({ ok: false, error: "values_object_required" }, 400);
       const allowed = getConfigKeys(env);
       const write = {};
-      for (const [k,v] of Object.entries(values)) if (allowed.includes(k)) write[k]=v;
-      await Promise.all(Object.entries(write).map(([k,v]) => env.CONFIG.put(String(k), String(v ?? ""))));
+      for (const [k, v] of Object.entries(values)) if (allowed.includes(k)) write[k] = v;
+      await Promise.all(Object.entries(write).map(([k, v]) => env.CONFIG.put(String(k), String(v ?? ""))));
       await audit(env, "config_import", { count: Object.keys(write).length });
-      return J({ ok:true, written: Object.keys(write).length });
+      return J({ ok: true, written: Object.keys(write).length });
     }
 
     // -------- CRON PROXIES (mit Bearer + HMAC) --------
@@ -100,67 +118,70 @@ export default {
     }
 
     if (req.method === "POST" && p === "/admin/cron/reconcile") {
-      await requireJson(req);
-      const body = await req.json().catch(()=> ({}));
+      if (!(await requireJson(req))) return badCT();
+      const body = await req.json().catch(() => ({}));
       const r = await proxyCron(env, "/reconcile-presale", "POST", body);
       return pass(r);
     }
 
     if (req.method === "GET" && p === "/admin/ops/peek") {
       const q = url.searchParams.toString();
-      const r = await proxyCron(env, `/ops/peek${q ? ("?"+q) : ""}`, "GET", null);
+      const r = await proxyCron(env, `/ops/peek${q ? "?" + q : ""}`, "GET", null);
       return pass(r);
     }
 
     // Health
-    if (req.method === "GET" && p === "/admin/health") return J({ ok:true, now: Date.now() });
+    if (req.method === "GET" && p === "/admin/health") return J({ ok: true, now: Date.now() });
 
     return new Response("Not found", { status: 404, headers: secHeaders() });
   }
 };
 
 /* --------------------- Auth / Allowlist --------------------- */
-function basicOk(req, env){
+function basicOk(req, env) {
   const h = req.headers.get("authorization") || "";
   if (!h.startsWith("Basic ")) return false;
-  const [u,p] = atob(h.slice(6)).split(":");
+  const [u, p] = atob(h.slice(6)).split(":");
   return u === env.ADMIN_USER && p === env.ADMIN_PASS;
 }
-function ipOk(req, env){
-  const allow = (env.IP_ALLOWLIST||"").split(",").map(s=>s.trim()).filter(Boolean);
-  if (allow.length===0) return true;
+function ipOk(req, env) {
+  const allow = (env.IP_ALLOWLIST || "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (allow.length === 0) return true;
   const ip = req.headers.get("cf-connecting-ip") || "";
   return allow.includes(ip);
 }
-function needsOtp(path, method){
+function needsOtp(path) {
   if (path === "/admin" || path === "/admin/health") return false;
-  // Für Config & Cron-Proxies TOTP verlangen
   return path.startsWith("/admin/config") || path.startsWith("/admin/cron") || path.startsWith("/admin/ops");
 }
 
 /* --------------------- Config Keys --------------------- */
-function getConfigKeys(env){
-  const csv = (env.CONFIG_KEYS||"").trim();
-  if (csv) return csv.split(",").map(s=>s.trim()).filter(Boolean);
+function getConfigKeys(env) {
+  const csv = (env.CONFIG_KEYS || "").trim();
+  if (csv) return csv.split(",").map((s) => s.trim()).filter(Boolean);
   return [];
 }
-function keyAllowed(env, k){ return getConfigKeys(env).includes(String(k)); }
+function keyAllowed(env, k) {
+  return getConfigKeys(env).includes(String(k));
+}
 
 /* --------------------- Audit (optional) --------------------- */
-async function audit(env, action, detail){
+async function audit(env, action, detail) {
   if (!env.OPS) return;
-  const key = `audit:${Date.now()}:${Math.random().toString(36).slice(2,8)}`;
-  try { await env.OPS.put(key, JSON.stringify({ action, detail, ts: Date.now() }), { expirationTtl: 86400*30 }); } catch {}
+  const key = `audit:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    await env.OPS.put(key, JSON.stringify({ action, detail, ts: Date.now() }), { expirationTtl: 86400 * 30 });
+  } catch {}
 }
 
 /* --------------------- Proxy zu Cron --------------------- */
-async function proxyCron(env, subpath, method="GET", bodyObj){
-  const base = (env.CRON_BASE||"").replace(/\/+$/,"");
+async function proxyCron(env, subpath, method = "GET", bodyObj) {
+  const base = (env.CRON_BASE || "").replace(/\/+$/, "");
   const url = `${base}${subpath}`;
-  const headers = { "authorization": `Bearer ${env.OPS_API_KEY}` };
+  const headers = { authorization: `Bearer ${env.OPS_API_KEY}` };
   let body = null;
 
-  if (method !== "GET" && bodyObj!=null){
+  if (method !== "GET" && bodyObj != null) {
     body = JSON.stringify(bodyObj);
     headers["content-type"] = "application/json";
     const algo = env.OPS_HMAC_ALGO || "SHA-256";
@@ -168,77 +189,98 @@ async function proxyCron(env, subpath, method="GET", bodyObj){
   }
   return fetch(url, { method, headers, body });
 }
-function pass(r){ return new Response(r.body, { status: r.status, headers: { "content-type": r.headers.get("content-type")||"application/json", ...secHeaders() } }); }
+function pass(r) {
+  const h = new Headers({ ...secHeaders() });
+  const ct = r.headers.get("content-type");
+  if (ct) h.set("content-type", ct);
+  return new Response(r.body, { status: r.status, headers: h });
+}
 
 /* --------------------- Helpers --------------------- */
-async function requireJson(req){
-  const ct = (req.headers.get("content-type")||"").toLowerCase();
-  if (!ct.includes("application/json")) throw new Response("Bad Content-Type", { status: 415, headers: secHeaders() });
+async function requireJson(req) {
+  const ct = (req.headers.get("content-type") || "").toLowerCase();
+  return ct.includes("application/json");
 }
-const J = (x, status=200, extraHeaders={}) => new Response(JSON.stringify(x), { status, headers: { "content-type":"application/json", ...secHeaders(), ...extraHeaders } });
-function secHeaders(){
+function badCT() {
+  return new Response("Bad Content-Type", { status: 415, headers: secHeaders() });
+}
+const J = (x, status = 200, extraHeaders = {}) =>
+  new Response(JSON.stringify(x), { status, headers: { "content-type": "application/json", ...secHeaders(), ...extraHeaders } });
+function secHeaders() {
   return {
-    "x-content-type-options":"nosniff",
-    "x-frame-options":"DENY",
-    "referrer-policy":"strict-origin-when-cross-origin",
-    "permissions-policy":"geolocation=(), microphone=(), camera=()",
-    "strict-transport-security":"max-age=31536000; includeSubDomains; preload",
-    "cache-control":"no-store"
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "referrer-policy": "strict-origin-when-cross-origin",
+    "permissions-policy": "geolocation=(), microphone=(), camera=()",
+    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+    "cache-control": "no-store"
   };
 }
-const toNum = (x, def) => (x==null||x==="") ? def : Number(x);
+const toNum = (x, def) => (x == null || x === "") ? def : Number(x);
 
 /* --------------------- TOTP (RFC 6238) --------------------- */
-function getOtpFromReq(req){
-  return req.headers.get("x-otp") || req.headers.get("x-otp-code") || (new URL(req.url)).searchParams.get("otp") || "";
+function getOtpFromReq(req) {
+  return req.headers.get("x-otp") || req.headers.get("x-otp-code") || new URL(req.url).searchParams.get("otp") || "";
 }
-async function verifyTOTP(secretBase32, code, { period=30, window=1, digits=6, algo="SHA-1" }={}){
+async function verifyTOTP(secretBase32, code, { period = 30, window = 1, digits = 6, algo = "SHA-1" } = {}) {
   if (!secretBase32) return false;
-  const clean = String(code||"").trim();
+  const clean = String(code || "").trim();
   if (!/^\d{6,8}$/.test(clean)) return false;
   const K = base32Decode(secretBase32);
-  const t = Math.floor(Date.now()/1000/period);
-  for (let w = -window; w <= window; w++){
+  const t = Math.floor(Date.now() / 1000 / period);
+  for (let w = -window; w <= window; w++) {
     const otp = await hotp(K, t + w, { digits, algo });
     if (otp === clean) return true;
   }
   return false;
 }
-async function hotp(keyBytes, counter, { digits=6, algo="SHA-1" }={}){
+async function hotp(keyBytes, counter, { digits = 6, algo = "SHA-1" } = {}) {
   const counterBuf = new Uint8Array(8);
-  for (let i=7; i>=0; i--){ counterBuf[i] = counter & 0xff; counter = Math.floor(counter/256); }
-  const cryptoKey = await crypto.subtle.importKey("raw", keyBytes, { name:"HMAC", hash:{name:algo} }, false, ["sign"]);
+  for (let i = 7; i >= 0; i--) {
+    counterBuf[i] = counter & 0xff;
+    counter = Math.floor(counter / 256);
+  }
+  const cryptoKey = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: { name: algo } }, false, ["sign"]);
   const mac = new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, counterBuf));
-  const offset = mac[mac.length-1] & 0x0f;
-  const bin = ((mac[offset] & 0x7f) << 24) | ((mac[offset+1] & 0xff) << 16) | ((mac[offset+2] & 0xff) << 8) | (mac[offset+3] & 0xff);
+  const offset = mac[mac.length - 1] & 0x0f;
+  const bin =
+    ((mac[offset] & 0x7f) << 24) |
+    ((mac[offset + 1] & 0xff) << 16) |
+    ((mac[offset + 2] & 0xff) << 8) |
+    (mac[offset + 3] & 0xff);
   const mod = 10 ** digits;
   const num = (bin % mod).toString();
   return num.padStart(digits, "0");
 }
-function base32Decode(s){
+function base32Decode(s) {
   const ALPH = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  const map = Object.fromEntries(ALPH.split("").map((c,i)=>[c,i]));
-  const str = s.toUpperCase().replace(/=+$/,"").replace(/[^A-Z2-7]/g,"");
+  const map = Object.fromEntries(ALPH.split("").map((c, i) => [c, i]));
+  const str = s.toUpperCase().replace(/=+$/, "").replace(/[^A-Z2-7]/g, "");
   let bits = "";
-  for (const ch of str){ const v = map[ch]; if(v==null) continue; bits += v.toString(2).padStart(5,"0"); }
+  for (const ch of str) {
+    const v = map[ch];
+    if (v == null) continue;
+    bits += v.toString(2).padStart(5, "0");
+  }
   const out = [];
-  for (let i=0; i+8<=bits.length; i+=8){ out.push(parseInt(bits.slice(i,i+8), 2)); }
+  for (let i = 0; i + 8 <= bits.length; i += 8) out.push(parseInt(bits.slice(i, i + 8), 2));
   return new Uint8Array(out);
 }
 
 /* --------------------- HMAC --------------------- */
-async function hmacHex(secret, msg, algo="SHA-256"){
+async function hmacHex(secret, msg, algo = "SHA-256") {
   const mac = await hmac(secret, msg, algo);
-  return [...new Uint8Array(mac)].map(b=>b.toString(16).padStart(2,"0")).join("");
+  return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-async function hmac(secret, msg, algo="SHA-256"){
+async function hmac(secret, msg, algo = "SHA-256") {
   const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name:"HMAC", hash:{name:algo} }, false, ["sign"]);
+  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: { name: algo } }, false, ["sign"]);
   return crypto.subtle.sign("HMAC", key, enc.encode(msg));
 }
 
 /* --------------------- UI (Dashboard + Konfigurator 2.0) --------------------- */
-function ui(env){
+function ui(env) {
+  // WICHTIG: Im <script> KEINE Backticks/Interpolation benutzen.
   const html = `<!doctype html>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>INPI Admin</title>
@@ -355,11 +397,15 @@ pre{ background:#0e1116; border:1px solid #2a3240; border-radius:10px; padding:1
 const LS_KEY="inpi_admin_otp";
 function getOtp(){ return localStorage.getItem(LS_KEY)||document.getElementById('otp').value||""; }
 function saveOtp(){ localStorage.setItem(LS_KEY, document.getElementById('otp').value||""); alert("OTP gespeichert (local)"); }
-function otpHdr(){ const v=getOtp(); return v?{'x-otp': v}:{ }; }
+function otpHdr(){ var v=getOtp(); return v?{'x-otp': v}:{ }; }
 
 /* ------------- Tabs ------------- */
 function showTab(t){
-  for (const id of ["dash","cfg","raw"]) document.getElementById(id).style.display = (id===t?"block":"none");
+  var ids = ["dash","cfg","raw"];
+  for (var i=0;i<ids.length;i++){
+    var id = ids[i];
+    document.getElementById(id).style.display = (id===t?"block":"none");
+  }
   document.getElementById("tabDash").classList.toggle("active", t==="dash");
   document.getElementById("tabCfg").classList.toggle("active", t==="cfg");
   document.getElementById("tabRaw").classList.toggle("active", t==="raw");
@@ -368,41 +414,48 @@ function showTab(t){
 /* ------------- Dashboard ------------- */
 async function loadStatus(){
   document.getElementById('dashMsg').textContent = "Lade Status…";
-  const r = await fetch('/admin/cron/status', { headers: otpHdr() });
-  if (r.status===401) return alert("401 Unauthorized (OTP?)");
-  const j = await r.json();
+  var r = await fetch('/admin/cron/status', { headers: otpHdr() });
+  if (r.status===401){ alert("401 Unauthorized (OTP?)"); return; }
+  var j = await r.json();
   document.getElementById('dashMsg').textContent = "OK";
   // Stats
-  const g = document.getElementById('statsGrid');
+  var g = document.getElementById('statsGrid');
   g.innerHTML = "";
-  const stats = j.stats || {};
-  const keys = Object.keys(stats).sort();
-  for (const k of keys){
-    const div = document.createElement('div');
+  var stats = j.stats || {};
+  var keys = Object.keys(stats).sort();
+  for (var i=0;i<keys.length;i++){
+    var k = keys[i];
+    var div = document.createElement('div');
     div.className = "stat";
-    div.innerHTML = `<b>${stats[k]}</b><div class="small">${k}</div>`;
+    div.innerHTML = '<b>' + (stats[k]!=null?stats[k]:'') + '</b><div class="small">' + k + '</div>';
     g.appendChild(div);
   }
   // Metrics
   document.getElementById('metricsPre').textContent = JSON.stringify(j.metrics || {}, null, 2);
 }
+
 async function reconcileNow(){
-  const limit = prompt("Max. Anzahl zu spiegelnder Presale-Intents (z.B. 200):", "200");
+  var limit = prompt("Max. Anzahl zu spiegelnder Presale-Intents (z.B. 200):", "200");
   if (!limit) return;
-  const r = await fetch('/admin/cron/reconcile', { method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({ limit: Number(limit) }) });
+  var r = await fetch('/admin/cron/reconcile', {
+    method:'POST',
+    headers:{'content-type':'application/json', ...otpHdr()},
+    body: JSON.stringify({ limit: Number(limit) })
+  });
   alert(await r.text());
   loadStatus();
 }
+
 async function peekQueue(){
-  const kind = document.getElementById('peekKind').value || "";
-  const limit = document.getElementById('peekLimit').value || "10";
-  const qs = `?limit=${encodeURIComponent(limit)}${kind?`&kind=${encodeURIComponent(kind)}`:''}`;
-  const r = await fetch('/admin/ops/peek'+qs, { headers: otpHdr() });
+  var kind = document.getElementById('peekKind').value || "";
+  var limit = document.getElementById('peekLimit').value || "10";
+  var qs = '?limit=' + encodeURIComponent(limit) + (kind ? '&kind=' + encodeURIComponent(kind) : '');
+  var r = await fetch('/admin/ops/peek' + qs, { headers: otpHdr() });
   document.getElementById('peekPre').textContent = await r.text();
 }
 
 /* ------------- Konfigurator 2.0 ------------- */
-const SCHEMA = [
+var SCHEMA = [
   { key:"presale_state", label:"Presale State", type:"select", options:["pre","closed","claim","live"], hint:"Phase steuern" },
   { key:"tge_ts", label:"TGE (ms)", type:"number", min:0, step:1, hint:"Unix ms (Date.now())" },
   { key:"presale_price_usdc", label:"Presale Preis (USDC)", type:"number", min:0, step:"0.00000001" },
@@ -447,34 +500,38 @@ const SCHEMA = [
   { key:"twap_enabled", label:"TWAP aktiv?", type:"select", options:["false","true"] }
 ];
 
-let CURRENT = {};
+var CURRENT = {};
 
-function el(tag, attrs={}, html=""){
-  const e = document.createElement(tag);
-  for (const [k,v] of Object.entries(attrs)) e.setAttribute(k, v);
+function el(tag, attrs, html){
+  var e = document.createElement(tag);
+  attrs = attrs || {};
+  for (var k in attrs){ if (Object.prototype.hasOwnProperty.call(attrs,k)) e.setAttribute(k, attrs[k]); }
   if (html) e.innerHTML = html;
   return e;
 }
 
 async function loadForm(){
-  const r = await fetch('/admin/config', { headers: otpHdr() });
-  if (r.status===401) return alert("401 Unauthorized (OTP?)");
-  const j = await r.json();
+  var r = await fetch('/admin/config', { headers: otpHdr() });
+  if (r.status===401){ alert("401 Unauthorized (OTP?)"); return; }
+  var j = await r.json();
   CURRENT = j.values || {};
-  const grid = document.getElementById('formGrid');
+  var grid = document.getElementById('formGrid');
   grid.innerHTML = "";
-  for (const fld of SCHEMA){
-    const label = el("label", {}, fld.label || fld.key);
+  for (var i=0;i<SCHEMA.length;i++){
+    var fld = SCHEMA[i];
+    var label = el("label", {}, fld.label || fld.key);
     label.setAttribute("for", "fld_"+fld.key);
     grid.appendChild(label);
 
-    let input;
-    const val = (CURRENT[fld.key] ?? "");
+    var input;
+    var val = (CURRENT[fld.key] != null ? CURRENT[fld.key] : "");
     if (fld.type === "select"){
       input = el("select", { id:"fld_"+fld.key, "data-key": fld.key });
-      for (const opt of fld.options||[]){
-        const o = el("option", { value: String(opt) }, String(opt));
-        if (String(val) === String(opt)) o.selected = true;
+      var opts = fld.options || [];
+      for (var j2=0;j2<opts.length;j2++){
+        var opt = String(opts[j2]);
+        var o = el("option", { value: opt }, opt);
+        if (String(val) === opt) o.selected = true;
         input.appendChild(o);
       }
     } else if (fld.type === "number"){
@@ -486,97 +543,101 @@ async function loadForm(){
       input = el("input", { id:"fld_"+fld.key, type:"text", "data-key": fld.key, value: val });
       if (fld.pattern) input.pattern = fld.pattern;
     }
-    input.addEventListener('change', ()=> input.dataset.changed="1");
+    input.addEventListener('change', function(){ this.dataset.changed="1"; });
     grid.appendChild(input);
 
-    const hint = el("div", { class:"hint" }, fld.hint||"");
+    var hint = el("div", { class:"hint" }, fld.hint||"");
     grid.appendChild(el("div")); // spacer for grid col 1
     grid.appendChild(hint);
   }
 }
 
 function collectChanged(){
-  const entries = {};
-  for (const fld of SCHEMA){
-    const elx = document.getElementById("fld_"+fld.key);
+  var entries = {};
+  for (var i=0;i<SCHEMA.length;i++){
+    var fld = SCHEMA[i];
+    var elx = document.getElementById("fld_"+fld.key);
     if (!elx || !elx.dataset.changed) continue;
-    let v = elx.value;
-    if (fld.type==="number" && v!=="") v = String(v); // KV speichert als String (Serverseite ggf. casten)
+    var v = elx.value;
+    if (fld.type==="number" && v!=="") v = String(v); // KV speichert als String
     entries[fld.key] = v;
   }
   return entries;
 }
 
 function validate(){
-  for (const fld of SCHEMA){
-    const elx = document.getElementById("fld_"+fld.key);
+  for (var i=0;i<SCHEMA.length;i++){
+    var fld = SCHEMA[i];
+    var elx = document.getElementById("fld_"+fld.key);
     if (!elx) continue;
     if (elx.type==="number"){
-      const val = elx.value==="" ? null : Number(elx.value);
+      var val = elx.value==="" ? null : Number(elx.value);
       if (val!=null){
-        if (elx.min!=="" && val < Number(elx.min)) return `Feld ${fld.key}: kleiner als min`;
-        if (elx.max!=="" && val > Number(elx.max)) return `Feld ${fld.key}: größer als max`;
+        if (elx.min!=="" && val < Number(elx.min)) return "Feld " + fld.key + ": kleiner als min";
+        if (elx.max!=="" && val > Number(elx.max)) return "Feld " + fld.key + ": größer als max";
       }
     }
     if (elx.pattern){
-      const re = new RegExp(elx.pattern);
-      if (elx.value && !re.test(elx.value)) return `Feld ${fld.key}: Format ungültig`;
+      var re = new RegExp(elx.pattern);
+      if (elx.value && !re.test(elx.value)) return "Feld " + fld.key + ": Format ungültig";
     }
   }
   return null;
 }
 
 async function saveChanged(){
-  const err = validate();
-  if (err) return alert(err);
-  const entries = collectChanged();
-  if (Object.keys(entries).length===0) return alert("Keine Änderungen");
-  const r = await fetch('/admin/config/setmany', { method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({ entries }) });
+  var err = validate();
+  if (err) { alert(err); return; }
+  var entries = collectChanged();
+  if (Object.keys(entries).length===0){ alert("Keine Änderungen"); return; }
+  var r = await fetch('/admin/config/setmany', { method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({ entries: entries }) });
   alert(await r.text());
   loadForm();
 }
 
 /* ------------- RAW-Tools (Fallback) ------------- */
 async function loadRaw(){
-  const r = await fetch('/admin/config', { headers: otpHdr() });
-  if (r.status===401) return alert("401 Unauthorized (OTP?)");
-  const j = await r.json();
+  var r = await fetch('/admin/config', { headers: otpHdr() });
+  if (r.status===401){ alert("401 Unauthorized (OTP?)"); return; }
+  var j = await r.json();
   document.getElementById('cfgPre').textContent = JSON.stringify(j.values || j, null, 2);
-  const ks = await fetch('/admin/config/keys', { headers: otpHdr() }).then(r=>r.json()).catch(()=>({keys:[]}));
+  var ks = await fetch('/admin/config/keys', { headers: otpHdr() }).then(function(r){return r.json();}).catch(function(){return {keys:[]};});
   document.getElementById('keys').textContent = JSON.stringify(ks.keys, null, 2);
 }
 async function exportCfg(){
-  const r = await fetch('/admin/config/export', { headers: otpHdr() });
-  if (r.status===401) return alert("401 Unauthorized (OTP?)");
-  const blob = await r.blob();
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'inpi-config-export.json'; a.click();
+  var r = await fetch('/admin/config/export', { headers: otpHdr() });
+  if (r.status===401){ alert("401 Unauthorized (OTP?)"); return; }
+  var blob = await r.blob();
+  var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'inpi-config-export.json'; a.click();
 }
 async function setOne(){
-  const key = document.getElementById('k').value.trim();
-  const value = document.getElementById('v').value;
-  if(!key) return alert('key fehlt');
-  const r = await fetch('/admin/config/set', {method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({key,value})});
+  var key = document.getElementById('k').value.trim();
+  var value = document.getElementById('v').value;
+  if(!key){ alert('key fehlt'); return; }
+  var r = await fetch('/admin/config/set', {method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({key:key,value:value})});
   alert(await r.text()); loadRaw();
 }
 async function delOne(){
-  const key = document.getElementById('k').value.trim();
-  if(!key) return alert('key fehlt');
-  if(!confirm('Wirklich löschen: '+key+' ?')) return;
-  const r = await fetch('/admin/config/delete', {method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({key})});
+  var key = document.getElementById('k').value.trim();
+  if(!key){ alert('key fehlt'); return; }
+  if(!confirm('Wirklich löschen: ' + key + ' ?')) return;
+  var r = await fetch('/admin/config/delete', {method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({key:key})});
   alert(await r.text()); loadRaw();
 }
 async function setMany(){
-  let obj; try{ obj = JSON.parse(document.getElementById('batch').value||"{}"); }catch(e){ return alert('Kein gültiges JSON'); }
-  const r = await fetch('/admin/config/setmany', {method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({entries: obj})});
+  var txt = document.getElementById('batch').value||"{}";
+  var obj;
+  try{ obj = JSON.parse(txt); }catch(e){ alert('Kein gültiges JSON'); return; }
+  var r = await fetch('/admin/config/setmany', {method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({entries: obj})});
   alert(await r.text()); loadRaw();
 }
 
 /* ------------- Init ------------- */
 (function init(){
-  const v = localStorage.getItem(LS_KEY)||"";
+  var v = localStorage.getItem(LS_KEY)||"";
   if (v) document.getElementById('otp').value = v;
   loadStatus();
 })();
 </script>`;
-  return new Response(html, { headers: { "content-type":"text/html; charset=utf-8", ...secHeaders() }});
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", ...secHeaders() } });
 }

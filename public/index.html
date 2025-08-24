@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Inpinity (INPI) – Presale & Status</title>
+  <meta name="description" content="Inpinity Token (INPI) – Presale, Status, Whitepaper, Verifizierungen." />
+
+  <!-- Security / Perf -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self';
+                 connect-src 'self' https://inpinity.online;
+                 img-src 'self' data:;
+                 script-src 'self' https://cdn.jsdelivr.net;
+                 style-src 'self' 'unsafe-inline';
+                 object-src 'none'; frame-ancestors 'none'; base-uri 'none'">
+  <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin">
+  <link rel="preconnect" href="https://inpinity.online" />
+
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="bar">
+    <img src="./inpi.png" class="logo" alt="INPI Logo"/>
+    <h1>Inpinity (INPI)</h1>
+    <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center">
+      <code id="walletAddr">—</code>
+      <button id="btnConnect" disabled>Verbinden</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Status -->
+    <section>
+      <h2>Status</h2>
+      <div class="stats">
+        <div><b>Presale-Phase:</b> <span id="presaleState">—</span></div>
+        <div><b>TGE in:</b> <span id="tgeTime">tbd</span></div>
+        <div><b>Preis (Presale, live/fallback):</b> <span id="p0">—</span></div>
+      </div>
+    </section>
+
+    <!-- Wallet -->
+    <section>
+      <h2>Deine Wallet</h2>
+      <div class="stats">
+        <div><b>USDC:</b> <span id="usdcBal">—</span></div>
+        <div><b>INPI:</b> <span id="inpiBal">—</span></div>
+      </div>
+    </section>
+
+    <!-- Deposit-Box (USDC) -->
+    <section class="card" id="depositBox">
+      <h2>Presale Einzahlung (USDC auf Solana)</h2>
+      <p>
+        <b>Adresse:</b>
+        <code id="depositAddr">—</code>
+        <a id="depositSolscan" href="#" target="_blank" rel="noopener" style="display:none">(Solscan)</a>
+      </p>
+      <p class="muted">Sende nur <b>USDC (SPL)</b> auf diese Adresse. Falsche Einzahlungen können verloren gehen.</p>
+    </section>
+
+    <!-- Presale Intent -->
+    <section>
+      <h2>Presale Intent</h2>
+      <label>USDC Betrag
+        <input id="inpAmount" type="number" min="1" step="1" value="100" />
+      </label>
+      <div><small>Erwartete Zuteilung: <b id="expectedInpi">–</b></small></div>
+      <div style="margin-top:.6rem;display:flex;gap:.6rem;flex-wrap:wrap">
+        <button id="btnPresaleIntent">Intent senden</button>
+        <button id="btnHowTo" class="secondary">Kurzanleitung</button>
+      </div>
+      <pre id="intentMsg" role="status" aria-live="polite"></pre>
+    </section>
+  </main>
+
+  <footer>
+    <small>
+      © Inpinity • <a href="https://inpinity.online" target="_blank" rel="noopener">Website</a> •
+      <a href="/docs/whitepaper-v1.pdf" target="_blank" rel="noopener">Whitepaper</a> •
+      <a href="/.well-known/inpi.json" target="_blank" rel="noopener">Verifikation</a>
+    </small>
+  </footer>
+  <script type="application/ld+json">
+  {"@context":"https://schema.org","@type":"Cryptocurrency","name":"Inpinity Token","symbol":"INPI","url":"https://inpinity.online/token"}
+  </script>
+  <!-- Solana web3 UMD (stellt global `solanaWeb3` bereit) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.98.4/lib/index.iife.min.js"></script>
+  <!-- Dein App-Code -->
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
