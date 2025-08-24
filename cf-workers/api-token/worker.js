@@ -3,34 +3,36 @@ export default {
     const url = new URL(req.url);
     const path = url.pathname.replace("/api/token", "");
 
-    try {
-      if (req.method === "GET" && path === "/status") {
-        const tge = (await env.CONFIG.get("tge_ts")) || "";
-        const presale = (await env.CONFIG.get("presale_state")) || "pre";
-        const tge_iso = tge ? new Date(Number(tge) * 1000).toISOString() : null;
-        return json({ ok: true, presale, tge_ts: tge, tge_iso });
-      }
-
-      if (req.method === "POST" && path === "/presale/intent") {
-        const body = await req.json().catch(() => ({}));
-        const { wallet, amount_usdc } = body;
-        if (!wallet || !amount_usdc) return bad("wallet/amount_usdc fehlt");
-
-        const cap = Number((await env.CONFIG.get("cap_per_wallet_usdc")) || "1000");
-        if (Number(amount_usdc) > cap) return bad(`Per-Wallet-Cap ${cap} USDC`);
-
-        const deposit_address = (await env.CONFIG.get("presale_deposit_usdc")) || "<DEINE_USDC_ADRESSE>";
-        const key = `intent:${wallet}:${Date.now()}`;
-        await env.PRESALE.put(key, JSON.stringify({ wallet, amount_usdc, ts: Date.now() }));
-
-        return json({ ok: true, deposit_address });
-      }
-
-      return new Response("Not found", { status: 404 });
-    } catch (e) {
-      return json({ ok:false, error: e.message }, 500);
+    if (path === "/status") {
+      const [state, tge, price, cap, deposit] = await Promise.all([
+        env.CONFIG.get("presale_state"),
+        env.CONFIG.get("tge_ts"),
+        env.CONFIG.get("presale_price_usdc"),
+        env.CONFIG.get("cap_per_wallet_usdc"),
+        env.CONFIG.get("presale_deposit_usdc"),
+      ]);
+      return json({
+        ok:true,
+        presale_state: state || "pre",
+        tge_ts: tge ? Number(tge) : null,
+        tge_iso: tge ? new Date(Number(tge)).toISOString() : null,
+        presale_price_usdc: price ? Number(price) : null,
+        cap_per_wallet_usdc: cap ? Number(cap) : null,
+        deposit_usdc_ata: deposit || null
+      });
     }
+
+    if (path === "/presale/intent" && req.method === "POST") {
+      const body = await req.json().catch(()=> ({}));
+      if (!body.wallet || !body.amount_usdc) return json({ok:false,error:"wallet/amount_usdc fehlt"},400);
+      const key = `intent:${Date.now()}:${body.wallet}`;
+      await env.PRESALE.put(key, JSON.stringify({
+        ...body, ts: Date.now(), ip: req.headers.get("cf-connecting-ip") || null
+      }));
+      return json({ok:true, key});
+    }
+
+    return json({ok:false, error:"not_found"}, 404);
   }
 }
-function json(obj, status=200){ return new Response(JSON.stringify(obj),{status,headers:{"content-type":"application/json","cache-control":"no-store"}}); }
-function bad(msg){ return json({ ok:false, error: msg }, 400); }
+function json(x, status=200){ return new Response(JSON.stringify(x), {status, headers:{'content-type':'application/json','cache-control':'no-store'}}); }
