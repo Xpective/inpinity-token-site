@@ -7,7 +7,7 @@ routes = [
 ]
 
 kv_namespaces = [
-  { binding = "CONFIG",  id = "<ee57d3036a25f352ab089a94066a03c1>"  },
-  { binding = "PRESALE", id = "<c7fe71ba6bd54e2a9ce76ed9c726a75d>" },
-  { binding = "CLAIMS",  id = "<485fc6ed252b445ba8ca18aaa9038e5c>"  }
+  { binding = "CONFIG",  id = "a82cb91c589b4b1a8c786807a49fe5f5"  },
+  { binding = "PRESALE", id = "c7fe71ba6bd54e2a9ce76ed9c726a75d" },
+  { binding = "CLAIMS",  id = "485fc6ed252b445ba8ca18aaa9038e5"  }
 ]
