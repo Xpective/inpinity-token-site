@@ -13,13 +13,16 @@ kv_namespaces = [
 ]
 
 [vars]
-CONFIG_KEYS = "presale_state,tge_ts,presale_price_usdc,public_price_usdc,presale_target_usdc,cap_per_wallet_usdc,presale_deposit_usdc,lp_split_bps,lp_lock_initial_days,lp_lock_rolling_days,staking_total_inpi,staking_fee_bps,staking_start_ts,staking_end_ts,buyback_enabled,buyback_min_usdc,buyback_twap_slices,buyback_cooldown_min,governance_multisig,timelock_seconds,project_uri,whitepaper_sha256,ops_api_key,twap_enabled"
+CONFIG_KEYS = "presale_state,tge_ts,presale_price_usdc,public_price_usdc,presale_target_usdc,cap_per_wallet_usdc,presale_deposit_usdc,lp_split_bps,lp_lock_initial_days,lp_lock_rolling_days,staking_total_inpi,staking_fee_bps,staking_start_ts,staking_end_ts,buyback_enabled,buyback_min_usdc,buyback_twap_slices,buyback_cooldown_min,buyback_split_burn_bps,buyback_split_lp_bps,governance_multisig,timelock_seconds,project_uri,whitepaper_sha256,ops_api_key,twap_enabled,supply_total,creator_usdc_stream_monthly_usdc,creator_usdc_stream_months,creator_usdc_stream_next_ts,creator_inpi_stream_bps_per_month,creator_inpi_stream_months,creator_inpi_stream_next_ts,lp_bucket_usdc,last_buyback_ts"
 
-# Optional: IP-Allowlist (CSV)
+# Admin-UI
 IP_ALLOWLIST = ""
-
-# TOTP-Parameter (wir setzen sinnvolle Defaults im Code, diese Variablen können leer bleiben)
-ADMIN_TOTP_PERIOD = "30"   # Sekunden
-ADMIN_TOTP_WINDOW = "1"    # zulässige Drift-Schritte (±)
-
 ADMIN_REALM = "INPI Admin"
+
+# Cron-Proxy (Admin -> Cron)
+CRON_BASE = "https://inpinity.online/cron"
+OPS_HMAC_ALGO = "SHA-256"
+
+# TOTP-Defaults
+ADMIN_TOTP_PERIOD = "30"
+ADMIN_TOTP_WINDOW = "1"
