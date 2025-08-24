@@ -121,6 +121,10 @@ button:focus-visible{
   outline-offset: 2px;
 }
 
+.callout{ border:1px solid var(--line); padding:12px 14px; border-radius:12px; }
+.callout.ok{ border-color: color-mix(in oklab, var(--ok) 60%, var(--line)); }
+.callout.err{ border-color: color-mix(in oklab, var(--error) 60%, var(--line)); }
+
 /* ----- Code / Pre ----- */
 code{
   background: var(--primary-ink);
@@ -136,6 +140,14 @@ pre{
   background: var(--bg-elev);
   max-height: 360px; overflow:auto;
 }
+
+.skel{ position:relative; overflow:hidden; background: var(--bg-elev); }
+.skel::after{
+  content:""; position:absolute; inset:0;
+  background: linear-gradient(90deg, transparent, #ffffff18, transparent);
+  animation: shimmer 1.4s infinite;
+}
+@keyframes shimmer{ 0%{ transform: translateX(-100%);} 100%{ transform: translateX(100%);} }
 
 /* ----- Utilities ----- */
 .row{ display:flex; gap:10px; flex-wrap:wrap; }
