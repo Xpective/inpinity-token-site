@@ -7,7 +7,15 @@ routes = [
 ]
 
 kv_namespaces = [
-  { binding = "CONFIG",  id = "a82cb91c589b4b1a8c786807a49fe5f5" }
+  { binding = "CONFIG", id = "a82cb91c589b4b1a8c786807a49fe5f5" }
+  # Optionales Audit-Log:
+  # { binding = "OPS",    id = "74e1d3dc6d84483b9454859750726be5" }
 ]
 
-# setze Benutzer/Passwort als Secrets (siehe unten)
+[vars]
+# Erlaubte Schlüssel (Komma-getrennt). Leerlassen = Fallback-Liste im Code.
+CONFIG_KEYS = "presale_state,tge_ts,presale_price_usdc,public_price_usdc,presale_target_usdc,cap_per_wallet_usdc,presale_deposit_usdc,lp_split_bps,lp_lock_initial_days,lp_lock_rolling_days,staking_total_inpi,staking_fee_bps,staking_start_ts,staking_end_ts,buyback_enabled,buyback_min_usdc,buyback_twap_slices,buyback_cooldown_min,governance_multisig,timelock_seconds,project_uri,whitepaper_sha256,ops_api_key,twap_enabled"
+
+# Optional: einfache IP-Allowlist (CSV, z.B. "1.2.3.4,5.6.7.8")
+IP_ALLOWLIST = ""
+ADMIN_REALM = "INPI Admin"
