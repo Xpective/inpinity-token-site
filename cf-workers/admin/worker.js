@@ -24,7 +24,7 @@ export default {
     const p = url.pathname;
 
     // OTP für sensible Routen (Config & Cron-Proxies)
-    const mustOtp = needsOtp(p, req.method);
+    const mustOtp = needsOtp(p);
     if (mustOtp && env.ADMIN_TOTP_SECRET) {
       const otp = getOtpFromReq(req);
       const ok = await verifyTOTP(env.ADMIN_TOTP_SECRET, otp, {
@@ -280,7 +280,7 @@ async function hmac(secret, msg, algo = "SHA-256") {
 
 /* --------------------- UI (Dashboard + Konfigurator 2.0) --------------------- */
 function ui(env) {
-  // WICHTIG: Im <script> KEINE Backticks/Interpolation benutzen.
+  // WICHTIG: Im <script> KEINE Backticks/Interpolation benutzen (nur concat).
   const html = `<!doctype html>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>INPI Admin</title>
@@ -393,8 +393,10 @@ pre{ background:#0e1116; border:1px solid #2a3240; border-radius:10px; padding:1
 </main>
 
 <script>
+// -------- Kein Template-Literal/Interpolation im Script! --------
+
 /* ------------- OTP Helpers ------------- */
-const LS_KEY="inpi_admin_otp";
+var LS_KEY="inpi_admin_otp";
 function getOtp(){ return localStorage.getItem(LS_KEY)||document.getElementById('otp').value||""; }
 function saveOtp(){ localStorage.setItem(LS_KEY, document.getElementById('otp').value||""); alert("OTP gespeichert (local)"); }
 function otpHdr(){ var v=getOtp(); return v?{'x-otp': v}:{ }; }
@@ -456,6 +458,7 @@ async function peekQueue(){
 
 /* ------------- Konfigurator 2.0 ------------- */
 var SCHEMA = [
+  // Core / Phasen
   { key:"presale_state", label:"Presale State", type:"select", options:["pre","closed","claim","live"], hint:"Phase steuern" },
   { key:"tge_ts", label:"TGE (ms)", type:"number", min:0, step:1, hint:"Unix ms (Date.now())" },
   { key:"presale_price_usdc", label:"Presale Preis (USDC)", type:"number", min:0, step:"0.00000001" },
@@ -464,16 +467,27 @@ var SCHEMA = [
   { key:"cap_per_wallet_usdc",label:"Cap/WALLET (USDC)",    type:"number", min:0, step:1 },
   { key:"presale_deposit_usdc",label:"USDC ATA (Deposit)",  type:"text",   pattern:"^[1-9A-HJ-NP-Za-km-z]{32,44}$", hint:"USDC-ATA-Adresse" },
 
+  // Gates
+  { key:"nft_gate_enabled", label:"NFT-Gate aktiv?", type:"select", options:["false","true"], hint:"Nur Käufer mit NFT-Collection" },
+  { key:"nft_gate_collection", label:"NFT Collection", type:"text", hint:"Kollections-Adresse" },
+  { key:"public_mint_enabled", label:"Public-Gate aktiv?", type:"select", options:["false","true"], hint:"Ohne NFT erlaubt" },
+  { key:"public_mint_price_usdc", label:"Public-Preis (USDC)", type:"number", min:0, step:"0.000001" },
+  { key:"public_mint_fee_bps", label:"Public Fee (bps)", type:"number", min:0, max:10000, step:1 },
+  { key:"public_mint_fee_dest", label:"Fee Ziel", type:"select", options:["lp","treasury"], hint:"Standard: lp" },
+
+  // LP / Locks
   { key:"lp_split_bps", label:"LP-Split (bps)", type:"number", min:0, max:10000, step:1, hint:"Bsp 5000=50%" },
   { key:"lp_bucket_usdc", label:"LP Bucket (USDC)", type:"number", min:0, step:"0.000001" },
   { key:"lp_lock_initial_days", label:"LP Lock initial (Tage)", type:"number", min:0, step:1 },
   { key:"lp_lock_rolling_days", label:"LP Lock rollierend (Tage)", type:"number", min:0, step:1 },
 
+  // Staking
   { key:"staking_total_inpi", label:"Staking Pool (INPI)", type:"number", min:0, step:1 },
   { key:"staking_fee_bps", label:"Staking Fee (bps)", type:"number", min:0, max:10000, step:1 },
   { key:"staking_start_ts", label:"Staking Start (ms)", type:"number", min:0, step:1 },
   { key:"staking_end_ts", label:"Staking Ende (ms)", type:"number", min:0, step:1 },
 
+  // Buyback / TWAP
   { key:"buyback_enabled", label:"Buyback an?", type:"select", options:["false","true"] },
   { key:"buyback_min_usdc", label:"Buyback min (USDC)", type:"number", min:0, step:"0.000001" },
   { key:"buyback_twap_slices", label:"TWAP Slices", type:"number", min:1, max:48, step:1 },
@@ -481,6 +495,19 @@ var SCHEMA = [
   { key:"buyback_split_burn_bps", label:"Buyback Burn bps", type:"number", min:0, max:10000, step:1 },
   { key:"buyback_split_lp_bps", label:"Buyback LP bps", type:"number", min:0, max:10000, step:1 },
 
+  // Safety Net: Floor-Vault
+  { key:"floor_enabled", label:"Floor aktiv?", type:"select", options:["false","true"] },
+  { key:"floor_min_usdc_per_inpi", label:"Floor USDC/INPI", type:"number", min:0, step:"0.00000001" },
+  { key:"floor_window_min", label:"Floor-Fenster (Min)", type:"number", min:0, step:1 },
+  { key:"floor_daily_cap_usdc", label:"Floor Tages-Cap (USDC)", type:"number", min:0, step:"0.01" },
+
+  // Safety Net: Circuit Breaker
+  { key:"cb_enabled", label:"Circuit Breaker aktiv?", type:"select", options:["false","true"] },
+  { key:"cb_drop_pct_1h", label:"Drop % / 1h", type:"number", min:0, max:100, step:1 },
+  { key:"cb_vol_mult", label:"Volumen Multiplikator", type:"number", min:0, step:1 },
+  { key:"cb_cooldown_min", label:"CB Cooldown (Min)", type:"number", min:0, step:1 },
+
+  // Streams
   { key:"creator_usdc_stream_monthly_usdc", label:"Creator USDC/Monat", type:"number", min:0, step:"0.000001" },
   { key:"creator_usdc_stream_months", label:"Monate (USDC)", type:"number", min:0, step:1 },
   { key:"creator_usdc_stream_next_ts", label:"Nächster USDC-Zeitpunkt (ms)", type:"number", min:0, step:1 },
@@ -489,15 +516,25 @@ var SCHEMA = [
   { key:"creator_inpi_stream_months", label:"Monate (INPI)", type:"number", min:0, step:1 },
   { key:"creator_inpi_stream_next_ts", label:"Nächster INPI-Zeitpunkt (ms)", type:"number", min:0, step:1 },
 
+  // Supply & Governance
   { key:"supply_total", label:"Total Supply (INPI)", type:"number", min:0, step:1 },
-
   { key:"governance_multisig", label:"Governance Multisig", type:"text", hint:"Pubkey/Address" },
   { key:"timelock_seconds", label:"Timelock (s)", type:"number", min:0, step:1 },
 
+  // Meta / Links
   { key:"project_uri", label:"Project URI", type:"text", hint:"https://inpinity.online/token" },
   { key:"whitepaper_sha256", label:"Whitepaper SHA-256", type:"text", hint:"Hash der PDF" },
+  { key:"twap_enabled", label:"TWAP aktiv?", type:"select", options:["false","true"] },
 
-  { key:"twap_enabled", label:"TWAP aktiv?", type:"select", options:["false","true"] }
+  // Distribution (bps, sum=10000)
+  { key:"dist_presale_bps", label:"Dist Presale (bps)", type:"number", min:0, max:10000, step:1 },
+  { key:"dist_dex_liquidity_bps", label:"Dist DEX/LP (bps)", type:"number", min:0, max:10000, step:1 },
+  { key:"dist_staking_bps", label:"Dist Staking (bps)", type:"number", min:0, max:10000, step:1 },
+  { key:"dist_ecosystem_bps", label:"Dist Ecosystem (bps)", type:"number", min:0, max:10000, step:1 },
+  { key:"dist_treasury_bps", label:"Dist Treasury (bps)", type:"number", min:0, max:10000, step:1 },
+  { key:"dist_team_bps", label:"Dist Team (bps)", type:"number", min:0, max:10000, step:1 },
+  { key:"dist_airdrop_nft_bps", label:"Dist Airdrop NFT (bps)", type:"number", min:0, max:10000, step:1 },
+  { key:"dist_buyback_reserve_bps", label:"Dist Buyback Reserve (bps)", type:"number", min:0, max:10000, step:1 }
 ];
 
 var CURRENT = {};
