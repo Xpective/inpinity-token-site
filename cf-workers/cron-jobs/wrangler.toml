@@ -2,7 +2,7 @@ name = "cron-jobs"
 main = "worker.js"
 compatibility_date = "2024-12-01"
 
-# Zwei Crons
+# Crons
 triggers = { crons = ["*/30 * * * *", "*/10 * * * *"] }
 
 routes = [
@@ -10,13 +10,20 @@ routes = [
 ]
 
 kv_namespaces = [
-  { binding = "CONFIG", id = "a82cb91c589b4b1a8c786807a49fe5f5" }, # INPI_CONFIG
-  { binding = "OPS",    id = "74e1d3dc6d84483b9454859750726be5" } # INPI_OPS
+  { binding = "CONFIG",  id = "a82cb91c589b4b1a8c786807a49fe5f5" }, # INPI_CONFIG
+  { binding = "OPS",     id = "74e1d3dc6d84483b9454859750726be5" }, # INPI_OPS
+  { binding = "PRESALE", id = "c7fe71ba6bd54e2a9ce76ed9c726a75d" }  # INPI_PRESALE
 ]
 
 [vars]
-# Optional: nur bestimmte IPs dürfen /cron/*-HTTP aufrufen (der Scheduler nutzt kein fetch, also egal)
+# Optional: IP-Restriktion für /cron/* HTTP
 IP_ALLOWLIST = ""
 
-# OPS-API: HMAC optional zusätzlich zum Bearer
+# OPS-API: zusätzl. HMAC neben Bearer
 OPS_HMAC_ALGO = "SHA-256"
+
+# Reconcile Batchgröße pro Lauf
+RECONCILE_BATCH = "200"
+
+# Webhook (optional)
+WEBHOOK_URL = ""
