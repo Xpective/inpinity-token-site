@@ -11,8 +11,9 @@ export default {
     const url = new URL(req.url);
     const p = url.pathname;
 
-    // Für alle Konfig-APIs TOTP erzwingen, falls SECRET gesetzt ist
-    if (needsOtp(p, req.method) && env.ADMIN_TOTP_SECRET) {
+    // OTP für sensible Routen (Config & Cron-Proxies)
+    const mustOtp = needsOtp(p, req.method);
+    if (mustOtp && env.ADMIN_TOTP_SECRET) {
       const otp = getOtpFromReq(req);
       const ok = await verifyTOTP(env.ADMIN_TOTP_SECRET, otp, {
         period: toNum(env.ADMIN_TOTP_PERIOD, 30),
@@ -26,12 +27,12 @@ export default {
     // UI
     if (req.method === "GET" && p === "/admin") return ui(env);
 
-    // Konfig lesen (einzelner oder alle erlaubten Keys)
+    // -------- CONFIG API (wie gehabt, aber beibehalten) --------
     if (req.method === "GET" && p === "/admin/config") {
-      const key = url.searchParams.get("key");
-      if (key) {
-        const v = await env.CONFIG.get(key);
-        return J({ ok:true, key, value: v });
+      const qKey = url.searchParams.get("key");
+      if (qKey) {
+        const v = await env.CONFIG.get(qKey);
+        return J({ ok:true, key: qKey, value: v });
       }
       const keys = getConfigKeys(env);
       const out = {};
@@ -39,47 +40,38 @@ export default {
       return J({ ok:true, keys, values: out });
     }
 
-    // Erlaubte Keys anzeigen
     if (req.method === "GET" && p === "/admin/config/keys") {
       return J({ ok:true, keys: getConfigKeys(env) });
     }
 
-    // Set
     if (req.method === "POST" && p === "/admin/config/set") {
       await requireJson(req);
       const { key, value } = await req.json().catch(()=> ({}));
-      if (!key) return J({ ok:false, error:"key_required" }, 400);
       if (!keyAllowed(env, key)) return J({ ok:false, error:"key_not_allowed" }, 403);
       await env.CONFIG.put(String(key), String(value ?? ""));
       await audit(env, "config_set", { key });
       return J({ ok:true });
     }
 
-    // Setmany
     if (req.method === "POST" && p === "/admin/config/setmany") {
       await requireJson(req);
       const { entries } = await req.json().catch(()=> ({}));
       if (!entries || typeof entries !== "object") return J({ ok:false, error:"entries_object_required" }, 400);
-      for (const [k] of Object.entries(entries)) {
-        if (!keyAllowed(env, k)) return J({ ok:false, error:`key_not_allowed:${k}` }, 403);
-      }
+      for (const [k] of Object.entries(entries)) if (!keyAllowed(env, k)) return J({ ok:false, error:`key_not_allowed:${k}` }, 403);
       await Promise.all(Object.entries(entries).map(([k,v]) => env.CONFIG.put(String(k), String(v ?? ""))));
       await audit(env, "config_setmany", { count: Object.keys(entries).length });
       return J({ ok:true });
     }
 
-    // Delete
     if (req.method === "POST" && p === "/admin/config/delete") {
       await requireJson(req);
       const { key } = await req.json().catch(()=> ({}));
-      if (!key) return J({ ok:false, error:"key_required" }, 400);
       if (!keyAllowed(env, key)) return J({ ok:false, error:"key_not_allowed" }, 403);
       await env.CONFIG.delete(key);
       await audit(env, "config_delete", { key });
       return J({ ok:true });
     }
 
-    // Export
     if (req.method === "GET" && p === "/admin/config/export") {
       const keys = getConfigKeys(env);
       const out = {};
@@ -89,7 +81,6 @@ export default {
       });
     }
 
-    // Import
     if (req.method === "POST" && p === "/admin/config/import") {
       await requireJson(req);
       const { values } = await req.json().catch(()=> ({}));
@@ -102,6 +93,25 @@ export default {
       return J({ ok:true, written: Object.keys(write).length });
     }
 
+    // -------- CRON PROXIES (mit Bearer + HMAC) --------
+    if (req.method === "GET" && p === "/admin/cron/status") {
+      const r = await proxyCron(env, "/status", "GET", null);
+      return pass(r);
+    }
+
+    if (req.method === "POST" && p === "/admin/cron/reconcile") {
+      await requireJson(req);
+      const body = await req.json().catch(()=> ({}));
+      const r = await proxyCron(env, "/reconcile-presale", "POST", body);
+      return pass(r);
+    }
+
+    if (req.method === "GET" && p === "/admin/ops/peek") {
+      const q = url.searchParams.toString();
+      const r = await proxyCron(env, `/ops/peek${q ? ("?"+q) : ""}`, "GET", null);
+      return pass(r);
+    }
+
     // Health
     if (req.method === "GET" && p === "/admin/health") return J({ ok:true, now: Date.now() });
 
@@ -109,7 +119,7 @@ export default {
   }
 };
 
-/* ---------- Auth / Allowlist ---------- */
+/* --------------------- Auth / Allowlist --------------------- */
 function basicOk(req, env){
   const h = req.headers.get("authorization") || "";
   if (!h.startsWith("Basic ")) return false;
@@ -123,40 +133,49 @@ function ipOk(req, env){
   return allow.includes(ip);
 }
 function needsOtp(path, method){
-  // OTP für alle Config-Routen (GET/POST); UI (/admin) & /health ohne
   if (path === "/admin" || path === "/admin/health") return false;
-  return path.startsWith("/admin/config");
+  // Für Config & Cron-Proxies TOTP verlangen
+  return path.startsWith("/admin/config") || path.startsWith("/admin/cron") || path.startsWith("/admin/ops");
 }
 
-/* ---------- Config Keys ---------- */
+/* --------------------- Config Keys --------------------- */
 function getConfigKeys(env){
   const csv = (env.CONFIG_KEYS||"").trim();
   if (csv) return csv.split(",").map(s=>s.trim()).filter(Boolean);
-  return [
-    "presale_state","tge_ts","presale_price_usdc","public_price_usdc","presale_target_usdc","cap_per_wallet_usdc",
-    "presale_deposit_usdc","lp_split_bps","lp_lock_initial_days","lp_lock_rolling_days",
-    "staking_total_inpi","staking_fee_bps","staking_start_ts","staking_end_ts",
-    "buyback_enabled","buyback_min_usdc","buyback_twap_slices","buyback_cooldown_min",
-    "governance_multisig","timelock_seconds","project_uri","whitepaper_sha256","ops_api_key","twap_enabled"
-  ];
+  return [];
 }
 function keyAllowed(env, k){ return getConfigKeys(env).includes(String(k)); }
 
-/* ---------- Audit (optional) ---------- */
+/* --------------------- Audit (optional) --------------------- */
 async function audit(env, action, detail){
   if (!env.OPS) return;
   const key = `audit:${Date.now()}:${Math.random().toString(36).slice(2,8)}`;
   try { await env.OPS.put(key, JSON.stringify({ action, detail, ts: Date.now() }), { expirationTtl: 86400*30 }); } catch {}
 }
 
-/* ---------- Helpers ---------- */
+/* --------------------- Proxy zu Cron --------------------- */
+async function proxyCron(env, subpath, method="GET", bodyObj){
+  const base = (env.CRON_BASE||"").replace(/\/+$/,"");
+  const url = `${base}${subpath}`;
+  const headers = { "authorization": `Bearer ${env.OPS_API_KEY}` };
+  let body = null;
+
+  if (method !== "GET" && bodyObj!=null){
+    body = JSON.stringify(bodyObj);
+    headers["content-type"] = "application/json";
+    const algo = env.OPS_HMAC_ALGO || "SHA-256";
+    headers["x-ops-hmac"] = await hmacHex(env.OPS_API_KEY, body, algo);
+  }
+  return fetch(url, { method, headers, body });
+}
+function pass(r){ return new Response(r.body, { status: r.status, headers: { "content-type": r.headers.get("content-type")||"application/json", ...secHeaders() } }); }
+
+/* --------------------- Helpers --------------------- */
 async function requireJson(req){
   const ct = (req.headers.get("content-type")||"").toLowerCase();
   if (!ct.includes("application/json")) throw new Response("Bad Content-Type", { status: 415, headers: secHeaders() });
 }
-const J = (x, status=200, extraHeaders={}) =>
-  new Response(JSON.stringify(x), { status, headers: { "content-type":"application/json", ...secHeaders(), ...extraHeaders } });
-
+const J = (x, status=200, extraHeaders={}) => new Response(JSON.stringify(x), { status, headers: { "content-type":"application/json", ...secHeaders(), ...extraHeaders } });
 function secHeaders(){
   return {
     "x-content-type-options":"nosniff",
@@ -169,9 +188,8 @@ function secHeaders(){
 }
 const toNum = (x, def) => (x==null||x==="") ? def : Number(x);
 
-/* ---------- TOTP (RFC 6238) ---------- */
+/* --------------------- TOTP (RFC 6238) --------------------- */
 function getOtpFromReq(req){
-  // Header bevorzugt, Query-Fallback für Tests
   return req.headers.get("x-otp") || req.headers.get("x-otp-code") || (new URL(req.url)).searchParams.get("otp") || "";
 }
 async function verifyTOTP(secretBase32, code, { period=30, window=1, digits=6, algo="SHA-1" }={}){
@@ -208,87 +226,328 @@ function base32Decode(s){
   return new Uint8Array(out);
 }
 
-/* ---------- UI ---------- */
+/* --------------------- HMAC --------------------- */
+async function hmacHex(secret, msg, algo="SHA-256"){
+  const mac = await hmac(secret, msg, algo);
+  return [...new Uint8Array(mac)].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+async function hmac(secret, msg, algo="SHA-256"){
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name:"HMAC", hash:{name:algo} }, false, ["sign"]);
+  return crypto.subtle.sign("HMAC", key, enc.encode(msg));
+}
+
+/* --------------------- UI (Dashboard + Konfigurator 2.0) --------------------- */
 function ui(env){
   const html = `<!doctype html>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>INPI Admin</title>
 <style>
 :root{ color-scheme: light dark; font-family: system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell; }
 body{ margin:0; background:#0b0d10; color:#e9eef6; }
 header{ padding:12px 16px; border-bottom:1px solid #2a3240; position:sticky; top:0; background:#12151a; display:flex; gap:10px; align-items:center; }
-main{ max-width:1000px; margin:0 auto; padding:20px 16px 60px; }
 h1{ margin:0; font-size:18px; }
+main{ max-width:1100px; margin:0 auto; padding:20px 16px 60px; }
+.tabs{ display:flex; gap:6px; margin-bottom:12px; }
+.tab{ padding:8px 10px; border:1px solid #2a3240; border-bottom:0; border-radius:10px 10px 0 0; background:#0e1116; cursor:pointer; }
+.tab.active{ background:#1a1f2a; }
 .card{ border:1px solid #2a3240; border-radius:12px; padding:14px; background:#12151a; margin:14px 0; }
-input,textarea{ width:100%; padding:10px 12px; border-radius:10px; border:1px solid #2a3240; background:transparent; color:inherit; }
+.grid{ display:grid; gap:12px; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); }
+.row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+input,select,textarea{ width:100%; padding:10px 12px; border-radius:10px; border:1px solid #2a3240; background:transparent; color:inherit; }
 button{ padding:10px 14px; border-radius:10px; border:0; cursor:pointer; background:#1d64ff; color:#fff; font-weight:600; }
 button.secondary{ background:transparent; border:1px solid #2a3240; }
 pre{ background:#0e1116; border:1px solid #2a3240; border-radius:10px; padding:10px; overflow:auto; }
-.small{ color:#9fb0c3; font-size:12px; }
-.grid{ display:grid; gap:12px; grid-template-columns: repeat(auto-fit, minmax(240px,1fr)); }
-.row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
 .badge{ font-size:12px; border:1px solid #2a3240; padding:2px 8px; border-radius:999px; }
+.small{ color:#9fb0c3; font-size:12px; }
+.kv{ display:grid; grid-template-columns: 220px 1fr; gap:10px; align-items:center; }
+.kv label{ font-size:13px; color:#cfd9ea; }
+.kv .hint{ grid-column: 2 / span 1; font-size:12px; color:#9fb0c3; margin-top:-6px;}
+.stat{ border:1px solid #2a3240; padding:10px; border-radius:10px; text-align:center; }
+.stat b{ font-size:20px; display:block; }
 </style>
 <header>
-  <h1>INPI Admin</h1>
-  <span class="badge">Basic ${env.ADMIN_TOTP_SECRET ? "+ TOTP" : ""}</span>
+  <h1>INPI Admin <span class="badge">Basic${env.ADMIN_TOTP_SECRET ? " + TOTP" : ""}</span></h1>
   <div style="margin-left:auto; display:flex; gap:8px; align-items:center;">
     <input id="otp" placeholder="TOTP (6-stellig)" style="width:160px" inputmode="numeric" />
     <button class="secondary" onclick="saveOtp()">Set OTP</button>
   </div>
 </header>
 <main>
-  <div class="card">
-    <div class="row">
-      <button onclick="load()">Konfig laden</button>
-      <button class="secondary" onclick="exportCfg()">Export</button>
-    </div>
-    <pre id="cfg">(noch leer)</pre>
-    <div class="small">Hinweis: <code>tge_ts</code> wird als Unix-Sekunden gespeichert.</div>
+  <div class="tabs">
+    <div class="tab active" id="tabDash" onclick="showTab('dash')">Dashboard</div>
+    <div class="tab" id="tabCfg" onclick="showTab('cfg')">Konfigurator</div>
+    <div class="tab" id="tabRaw" onclick="showTab('raw')">Raw-Config</div>
   </div>
 
-  <div class="card">
-    <h3>Key setzen</h3>
-    <div class="grid">
-      <div><input id="k" placeholder="key (z.B. presale_state)"></div>
-      <div><input id="v" placeholder="value"></div>
+  <!-- DASHBOARD -->
+  <section id="dash">
+    <div class="card">
+      <div class="row">
+        <button onclick="loadStatus()">Status aktualisieren</button>
+        <button class="secondary" onclick="reconcileNow()">Reconcile Presale → OPS</button>
+        <div class="small" id="dashMsg"></div>
+      </div>
+      <div class="grid" id="statsGrid"></div>
+      <pre id="metricsPre" style="margin-top:12px">(Metriken…)</pre>
     </div>
-    <div class="row" style="margin-top:8px;">
-      <button onclick="setOne()">Set</button>
-      <button class="secondary" onclick="delOne()">Delete</button>
-    </div>
-  </div>
 
-  <div class="card">
-    <h3>Batch-Set (JSON Objekt)</h3>
-    <textarea id="batch" rows="8" placeholder='{"presale_state":"pre","presale_price_usdc":"0.00031415"}'></textarea>
-    <div class="row" style="margin-top:8px;">
-      <button onclick="setMany()">Setmany</button>
-      <button class="secondary" onclick="importCfg()">Import JSON</button>
+    <div class="card">
+      <h3>Peek Queue</h3>
+      <div class="row">
+        <select id="peekKind">
+          <option value="">(alle)</option>
+          <option value="PRESALE_ALLOCATION">PRESALE_ALLOCATION</option>
+          <option value="BUYBACK_TWAP_AND_LP">BUYBACK_TWAP_AND_LP</option>
+          <option value="CREATOR_PAYOUT_USDC">CREATOR_PAYOUT_USDC</option>
+          <option value="CREATOR_PAYOUT_INPI">CREATOR_PAYOUT_INPI</option>
+        </select>
+        <input id="peekLimit" type="number" min="1" max="100" value="10" style="width:120px"/>
+        <button onclick="peekQueue()">Peek</button>
+      </div>
+      <pre id="peekPre">(leer)</pre>
     </div>
-  </div>
+  </section>
 
-  <div class="card small">
-    <b>Erlaubte Keys</b>
-    <pre id="keys">Lade…</pre>
-  </div>
+  <!-- KONFIGURATOR 2.0 -->
+  <section id="cfg" style="display:none;">
+    <div class="card">
+      <div class="row">
+        <button onclick="loadForm()">Werte laden</button>
+        <button class="secondary" onclick="saveChanged()">Geänderte speichern</button>
+      </div>
+      <div id="formGrid" class="kv"></div>
+      <div class="small" style="margin-top:8px;">Nur geänderte Felder werden gespeichert. Typen & Bereiche werden validiert.</div>
+    </div>
+  </section>
+
+  <!-- RAW-Fallback -->
+  <section id="raw" style="display:none;">
+    <div class="card">
+      <div class="row">
+        <button onclick="loadRaw()">Konfig laden</button>
+        <button class="secondary" onclick="exportCfg()">Export</button>
+      </div>
+      <pre id="cfgPre">(noch leer)</pre>
+      <div class="row" style="margin-top:8px;">
+        <input id="k" placeholder="key (z.B. presale_state)">
+        <input id="v" placeholder="value">
+        <button onclick="setOne()">Set</button>
+        <button class="secondary" onclick="delOne()">Delete</button>
+      </div>
+      <div style="margin-top:10px;">
+        <textarea id="batch" rows="6" style="width:100%;" placeholder='{"presale_state":"pre","presale_price_usdc":"0.00031415"}'></textarea>
+        <div class="row" style="margin-top:8px;">
+          <button onclick="setMany()">Setmany</button>
+          <button class="secondary" onclick="importCfg()">Import JSON</button>
+        </div>
+      </div>
+      <div class="card small">
+        <b>Erlaubte Keys</b>
+        <pre id="keys">Lade…</pre>
+      </div>
+    </div>
+  </section>
 </main>
+
 <script>
+/* ------------- OTP Helpers ------------- */
 const LS_KEY="inpi_admin_otp";
 function getOtp(){ return localStorage.getItem(LS_KEY)||document.getElementById('otp').value||""; }
 function saveOtp(){ localStorage.setItem(LS_KEY, document.getElementById('otp').value||""); alert("OTP gespeichert (local)"); }
 function otpHdr(){ const v=getOtp(); return v?{'x-otp': v}:{ }; }
 
-async function load(){
-  const r = await fetch('/admin/config', { headers: otpHdr() });
-  if (r.status===401) { alert('401 Unauthorized (OTP?)'); return; }
+/* ------------- Tabs ------------- */
+function showTab(t){
+  for (const id of ["dash","cfg","raw"]) document.getElementById(id).style.display = (id===t?"block":"none");
+  document.getElementById("tabDash").classList.toggle("active", t==="dash");
+  document.getElementById("tabCfg").classList.toggle("active", t==="cfg");
+  document.getElementById("tabRaw").classList.toggle("active", t==="raw");
+}
+
+/* ------------- Dashboard ------------- */
+async function loadStatus(){
+  document.getElementById('dashMsg').textContent = "Lade Status…";
+  const r = await fetch('/admin/cron/status', { headers: otpHdr() });
+  if (r.status===401) return alert("401 Unauthorized (OTP?)");
   const j = await r.json();
-  document.getElementById('cfg').textContent = JSON.stringify(j.values || j, null, 2);
+  document.getElementById('dashMsg').textContent = "OK";
+  // Stats
+  const g = document.getElementById('statsGrid');
+  g.innerHTML = "";
+  const stats = j.stats || {};
+  const keys = Object.keys(stats).sort();
+  for (const k of keys){
+    const div = document.createElement('div');
+    div.className = "stat";
+    div.innerHTML = `<b>${stats[k]}</b><div class="small">${k}</div>`;
+    g.appendChild(div);
+  }
+  // Metrics
+  document.getElementById('metricsPre').textContent = JSON.stringify(j.metrics || {}, null, 2);
+}
+async function reconcileNow(){
+  const limit = prompt("Max. Anzahl zu spiegelnder Presale-Intents (z.B. 200):", "200");
+  if (!limit) return;
+  const r = await fetch('/admin/cron/reconcile', { method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({ limit: Number(limit) }) });
+  alert(await r.text());
+  loadStatus();
+}
+async function peekQueue(){
+  const kind = document.getElementById('peekKind').value || "";
+  const limit = document.getElementById('peekLimit').value || "10";
+  const qs = `?limit=${encodeURIComponent(limit)}${kind?`&kind=${encodeURIComponent(kind)}`:''}`;
+  const r = await fetch('/admin/ops/peek'+qs, { headers: otpHdr() });
+  document.getElementById('peekPre').textContent = await r.text();
+}
+
+/* ------------- Konfigurator 2.0 ------------- */
+const SCHEMA = [
+  { key:"presale_state", label:"Presale State", type:"select", options:["pre","closed","claim","live"], hint:"Phase steuern" },
+  { key:"tge_ts", label:"TGE (ms)", type:"number", min:0, step:1, hint:"Unix ms (Date.now())" },
+  { key:"presale_price_usdc", label:"Presale Preis (USDC)", type:"number", min:0, step:"0.00000001" },
+  { key:"public_price_usdc",  label:"Public Preis (USDC)",  type:"number", min:0, step:"0.00000001" },
+  { key:"presale_target_usdc",label:"Ziel Presale (USDC)",   type:"number", min:0, step:1 },
+  { key:"cap_per_wallet_usdc",label:"Cap/WALLET (USDC)",    type:"number", min:0, step:1 },
+  { key:"presale_deposit_usdc",label:"USDC ATA (Deposit)",  type:"text",   pattern:"^[1-9A-HJ-NP-Za-km-z]{32,44}$", hint:"USDC-ATA-Adresse" },
+
+  { key:"lp_split_bps", label:"LP-Split (bps)", type:"number", min:0, max:10000, step:1, hint:"Bsp 5000=50%" },
+  { key:"lp_bucket_usdc", label:"LP Bucket (USDC)", type:"number", min:0, step:"0.000001" },
+  { key:"lp_lock_initial_days", label:"LP Lock initial (Tage)", type:"number", min:0, step:1 },
+  { key:"lp_lock_rolling_days", label:"LP Lock rollierend (Tage)", type:"number", min:0, step:1 },
+
+  { key:"staking_total_inpi", label:"Staking Pool (INPI)", type:"number", min:0, step:1 },
+  { key:"staking_fee_bps", label:"Staking Fee (bps)", type:"number", min:0, max:10000, step:1 },
+  { key:"staking_start_ts", label:"Staking Start (ms)", type:"number", min:0, step:1 },
+  { key:"staking_end_ts", label:"Staking Ende (ms)", type:"number", min:0, step:1 },
+
+  { key:"buyback_enabled", label:"Buyback an?", type:"select", options:["false","true"] },
+  { key:"buyback_min_usdc", label:"Buyback min (USDC)", type:"number", min:0, step:"0.000001" },
+  { key:"buyback_twap_slices", label:"TWAP Slices", type:"number", min:1, max:48, step:1 },
+  { key:"buyback_cooldown_min", label:"Cooldown (min)", type:"number", min:0, step:1 },
+  { key:"buyback_split_burn_bps", label:"Buyback Burn bps", type:"number", min:0, max:10000, step:1 },
+  { key:"buyback_split_lp_bps", label:"Buyback LP bps", type:"number", min:0, max:10000, step:1 },
+
+  { key:"creator_usdc_stream_monthly_usdc", label:"Creator USDC/Monat", type:"number", min:0, step:"0.000001" },
+  { key:"creator_usdc_stream_months", label:"Monate (USDC)", type:"number", min:0, step:1 },
+  { key:"creator_usdc_stream_next_ts", label:"Nächster USDC-Zeitpunkt (ms)", type:"number", min:0, step:1 },
+
+  { key:"creator_inpi_stream_bps_per_month", label:"Creator INPI bps/Monat", type:"number", min:0, max:10000, step:1 },
+  { key:"creator_inpi_stream_months", label:"Monate (INPI)", type:"number", min:0, step:1 },
+  { key:"creator_inpi_stream_next_ts", label:"Nächster INPI-Zeitpunkt (ms)", type:"number", min:0, step:1 },
+
+  { key:"supply_total", label:"Total Supply (INPI)", type:"number", min:0, step:1 },
+
+  { key:"governance_multisig", label:"Governance Multisig", type:"text", hint:"Pubkey/Address" },
+  { key:"timelock_seconds", label:"Timelock (s)", type:"number", min:0, step:1 },
+
+  { key:"project_uri", label:"Project URI", type:"text", hint:"https://inpinity.online/token" },
+  { key:"whitepaper_sha256", label:"Whitepaper SHA-256", type:"text", hint:"Hash der PDF" },
+
+  { key:"twap_enabled", label:"TWAP aktiv?", type:"select", options:["false","true"] }
+];
+
+let CURRENT = {};
+
+function el(tag, attrs={}, html=""){
+  const e = document.createElement(tag);
+  for (const [k,v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (html) e.innerHTML = html;
+  return e;
+}
+
+async function loadForm(){
+  const r = await fetch('/admin/config', { headers: otpHdr() });
+  if (r.status===401) return alert("401 Unauthorized (OTP?)");
+  const j = await r.json();
+  CURRENT = j.values || {};
+  const grid = document.getElementById('formGrid');
+  grid.innerHTML = "";
+  for (const fld of SCHEMA){
+    const label = el("label", {}, fld.label || fld.key);
+    label.setAttribute("for", "fld_"+fld.key);
+    grid.appendChild(label);
+
+    let input;
+    const val = (CURRENT[fld.key] ?? "");
+    if (fld.type === "select"){
+      input = el("select", { id:"fld_"+fld.key, "data-key": fld.key });
+      for (const opt of fld.options||[]){
+        const o = el("option", { value: String(opt) }, String(opt));
+        if (String(val) === String(opt)) o.selected = true;
+        input.appendChild(o);
+      }
+    } else if (fld.type === "number"){
+      input = el("input", { id:"fld_"+fld.key, type:"number", "data-key": fld.key, value: val });
+      if (fld.min!=null) input.min = fld.min;
+      if (fld.max!=null) input.max = fld.max;
+      if (fld.step!=null) input.step = fld.step;
+    } else {
+      input = el("input", { id:"fld_"+fld.key, type:"text", "data-key": fld.key, value: val });
+      if (fld.pattern) input.pattern = fld.pattern;
+    }
+    input.addEventListener('change', ()=> input.dataset.changed="1");
+    grid.appendChild(input);
+
+    const hint = el("div", { class:"hint" }, fld.hint||"");
+    grid.appendChild(el("div")); // spacer for grid col 1
+    grid.appendChild(hint);
+  }
+}
+
+function collectChanged(){
+  const entries = {};
+  for (const fld of SCHEMA){
+    const elx = document.getElementById("fld_"+fld.key);
+    if (!elx || !elx.dataset.changed) continue;
+    let v = elx.value;
+    if (fld.type==="number" && v!=="") v = String(v); // KV speichert als String (Serverseite ggf. casten)
+    entries[fld.key] = v;
+  }
+  return entries;
+}
+
+function validate(){
+  for (const fld of SCHEMA){
+    const elx = document.getElementById("fld_"+fld.key);
+    if (!elx) continue;
+    if (elx.type==="number"){
+      const val = elx.value==="" ? null : Number(elx.value);
+      if (val!=null){
+        if (elx.min!=="" && val < Number(elx.min)) return `Feld ${fld.key}: kleiner als min`;
+        if (elx.max!=="" && val > Number(elx.max)) return `Feld ${fld.key}: größer als max`;
+      }
+    }
+    if (elx.pattern){
+      const re = new RegExp(elx.pattern);
+      if (elx.value && !re.test(elx.value)) return `Feld ${fld.key}: Format ungültig`;
+    }
+  }
+  return null;
+}
+
+async function saveChanged(){
+  const err = validate();
+  if (err) return alert(err);
+  const entries = collectChanged();
+  if (Object.keys(entries).length===0) return alert("Keine Änderungen");
+  const r = await fetch('/admin/config/setmany', { method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({ entries }) });
+  alert(await r.text());
+  loadForm();
+}
+
+/* ------------- RAW-Tools (Fallback) ------------- */
+async function loadRaw(){
+  const r = await fetch('/admin/config', { headers: otpHdr() });
+  if (r.status===401) return alert("401 Unauthorized (OTP?)");
+  const j = await r.json();
+  document.getElementById('cfgPre').textContent = JSON.stringify(j.values || j, null, 2);
+  const ks = await fetch('/admin/config/keys', { headers: otpHdr() }).then(r=>r.json()).catch(()=>({keys:[]}));
+  document.getElementById('keys').textContent = JSON.stringify(ks.keys, null, 2);
 }
 async function exportCfg(){
   const r = await fetch('/admin/config/export', { headers: otpHdr() });
-  if (r.status===401) { alert('401 Unauthorized (OTP?)'); return; }
+  if (r.status===401) return alert("401 Unauthorized (OTP?)");
   const blob = await r.blob();
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'inpi-config-export.json'; a.click();
 }
@@ -297,35 +556,26 @@ async function setOne(){
   const value = document.getElementById('v').value;
   if(!key) return alert('key fehlt');
   const r = await fetch('/admin/config/set', {method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({key,value})});
-  alert(await r.text()); load();
+  alert(await r.text()); loadRaw();
 }
 async function delOne(){
   const key = document.getElementById('k').value.trim();
   if(!key) return alert('key fehlt');
   if(!confirm('Wirklich löschen: '+key+' ?')) return;
   const r = await fetch('/admin/config/delete', {method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({key})});
-  alert(await r.text()); load();
+  alert(await r.text()); loadRaw();
 }
 async function setMany(){
   let obj; try{ obj = JSON.parse(document.getElementById('batch').value||"{}"); }catch(e){ return alert('Kein gültiges JSON'); }
   const r = await fetch('/admin/config/setmany', {method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({entries: obj})});
-  alert(await r.text()); load();
+  alert(await r.text()); loadRaw();
 }
-async function importCfg(){
-  const txt = prompt('Bitte JSON einfügen ({"values":{...}} oder direkt Werte-Objekt)');
-  if(!txt) return;
-  let data; try{ data = JSON.parse(txt); }catch(e){ return alert('Kein gültiges JSON'); }
-  const body = data.values ? data : { values: data };
-  const r = await fetch('/admin/config/import', {method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify(body)});
-  alert(await r.text()); load();
-}
+
+/* ------------- Init ------------- */
 (function init(){
   const v = localStorage.getItem(LS_KEY)||"";
   if (v) document.getElementById('otp').value = v;
-  fetch('/admin/config/keys', { headers: otpHdr() })
-    .then(r=>r.json()).then(j=> document.getElementById('keys').textContent = JSON.stringify(j.keys||[], null, 2))
-    .catch(()=> document.getElementById('keys').textContent = 'Fehler');
-  load();
+  loadStatus();
 })();
 </script>`;
   return new Response(html, { headers: { "content-type":"text/html; charset=utf-8", ...secHeaders() }});
