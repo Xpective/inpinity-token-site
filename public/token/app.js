@@ -108,6 +108,18 @@ async function refreshStatus(){
     STATE.price_presale  = j?.presale_price_usdc ?? null;
     STATE.price_public   = j?.public_price_usdc ?? null;
     STATE.deposit_ata    = j?.deposit_usdc_ata || null;
+    // Deposit-Box im UI aktualisieren
+const dep = document.querySelector("#depositAddr");
+const depA = document.querySelector("#depositSolscan");
+if (dep) {
+  if (STATE.deposit_ata) {
+    dep.textContent = STATE.deposit_ata;
+    if (depA) { depA.href = `https://solscan.io/account/${STATE.deposit_ata}`; depA.style.display = "inline"; }
+  } else {
+    dep.textContent = "—";
+    if (depA) depA.style.display = "none";
+  }
+}
 
     presaleState.textContent = STATE.presale_state;
     if (STATE.price_presale) p0.textContent = `${Number(STATE.price_presale).toFixed(6)} USDC (live)`;
