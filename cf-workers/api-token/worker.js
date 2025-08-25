@@ -7,6 +7,8 @@
 // Vars:
 //  - RPC_URL, GATE_MINT, PRESALE_MIN_USDC, PRESALE_MAX_USDC
 
+const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"; // offizieller Solana-USDC
+
 export default {
   async fetch(req, env) {
     try {
@@ -16,14 +18,24 @@ export default {
       // ---- STATUS (public) ----
       if (req.method === "GET" && p === "/api/token/status") {
         const cfg = await readPublicConfig(env);
+        const rpc_url = await getPublicRpcUrl(env);
+
         const out = {
+          rpc_url,
+          usdc_mint: USDC_MINT,
+
           inpi_mint: cfg.INPI_MINT || "",
           presale_state: cfg.presale_state || "pre",
           tge_ts: cfg.tge_ts, // Sekunden (normalisiert)
           presale_price_usdc: toNumOrNull(cfg.presale_price_usdc),
           public_price_usdc:  toNumOrNull(cfg.public_price_usdc),
-          deposit_usdc_ata: cfg.presale_deposit_usdc || "",
+          deposit_usdc_ata:   cfg.presale_deposit_usdc || "",
           cap_per_wallet_usdc: toNumOrNull(cfg.cap_per_wallet_usdc),
+
+          // hilfreiche Limits fürs Frontend
+          presale_min_usdc: toNumOrNull(env.PRESALE_MIN_USDC),
+          presale_max_usdc: toNumOrNull(env.PRESALE_MAX_USDC),
+
           updated_at: Date.now()
         };
         return J(out);
@@ -71,7 +83,7 @@ export default {
           return J({ ok:false, error:"gate_denied" }, 403);
         }
 
-        // Persistieren in PRESALE (nicht INTENTS!)
+        // Persistieren in PRESALE
         const key = `intent:${Date.now()}:${wallet}`;
         await env.PRESALE.put(key, JSON.stringify({
           wallet,
@@ -81,7 +93,6 @@ export default {
           ts: Date.now()
         }), { expirationTtl: 60*60*24*30 });
 
-        // Schöne, sichere Text-Antwort (Frontend rendert textContent)
         const text =
 `✅ Intent registriert.
 Bitte sende ${amount} USDC an:
@@ -131,17 +142,27 @@ async function readPublicConfig(env) {
   return out;
 }
 
+async function getPublicRpcUrl(env) {
+  try {
+    const fromCfg = await env.CONFIG.get("public_rpc_url");
+    return fromCfg || env.RPC_URL || "https://inpinity.online/rpc";
+  } catch {
+    return env.RPC_URL || "https://inpinity.online/rpc";
+  }
+}
+
 // Optionales NFT-Gate: hält Wallet mind. 1 Token von gateMint?
 async function passesNftGate(env, owner, gateMint) {
   try {
-    if (!env.RPC_URL) return true; // kein RPC hinterlegt → Gate aus
+    const rpc = await getPublicRpcUrl(env);
+    if (!rpc) return true; // kein RPC → Gate nicht blocken
     const body = {
       jsonrpc: "2.0",
       id: 1,
       method: "getTokenAccountsByOwner",
       params: [owner, { mint: gateMint }, { encoding: "jsonParsed", commitment: "confirmed" }]
     };
-    const r = await fetch(env.RPC_URL, { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify(body) });
+    const r = await fetch(rpc, { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify(body) });
     const j = await r.json();
     const arr = j?.result?.value || [];
     for (const it of arr) {

@@ -6,27 +6,25 @@
 /* ==================== KONFIG (Fallbacks) ==================== */
 const CFG = {
   RPC: "https://inpinity.online/rpc",
-  // Fallback – wird von /api/token/status überschrieben, wenn vorhanden:
   INPI_MINT: "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
-  // Du hast diese USDC-Adresse verifiziert:
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   API_BASE: "https://inpinity.online/api/token",
 
-  // Fallbacks (nur wenn API nichts liefert)
   P0_USDC: 0.00031415,
   PRESALE_DISCOUNT: 0.10,
+
   DEPOSIT_USDC_ATA_FALLBACK: "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
   TGE_TS_FALLBACK: Math.floor(Date.now()/1000) + 60*60*24*90
 };
 
 /* ================ SOLANA / PHANTOM ================ */
-const { Connection } = solanaWeb3;
+const { Connection, PublicKey } = solanaWeb3;
 
 const $ = (sel) => document.querySelector(sel);
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const short = (a) => (a?.slice(0, 4) + "…" + a?.slice(-4));
-const fmt = (n, d=2) => (n==null || Number.isNaN(n)) ? "–" : Number(n).toLocaleString("de-DE",{ maximumFractionDigits:d });
-const solscan = (addr) => `https://solscan.io/account/${addr}`;
-const nowSec = () => Math.floor(Date.now()/1000);
+function fmt(n, d = 2) { if (n == null || isNaN(n)) return "–"; return Number(n).toLocaleString("de-DE",{maximumFractionDigits:d}); }
+function solscan(addr){ return `https://solscan.io/account/${addr}`; }
 
 // UI-Refs
 const btnConnect = $("#btnConnect");
@@ -41,21 +39,27 @@ const expectedInpi = $("#expectedInpi");
 const btnPresaleIntent = $("#btnPresaleIntent");
 const btnHowTo = $("#btnHowTo");
 const intentMsg = $("#intentMsg");
+const depositAddrEl = $("#depositAddr");
+const depositSolscanA = $("#depositSolscan");
 
 let connection = null;
+let currentRpcUrl = null;
 let provider = null; // Phantom
 let pubkey = null;
 let POLL = null;
 
-// Laufender State (aus /api/token/status)
 const STATE = {
-  inpi_mint: CFG.INPI_MINT,
+  rpc_url: null,
+  inpi_mint: null,
+  usdc_mint: null,
   price_presale: null,
   price_public: null,
   presale_state: "pre",
-  tge_ts: CFG.TGE_TS_FALLBACK,
-  deposit_ata: CFG.DEPOSIT_USDC_ATA_FALLBACK
+  tge_ts: null,
+  deposit_ata: null
 };
+
+function nowSec(){ return Math.floor(Date.now()/1000); }
 
 /* ---------- Preis/Erwartung ---------- */
 function currentPriceUSDC() {
@@ -72,13 +76,20 @@ function calcExpectedInpi(usdc) {
 
 /* ==================== INIT ==================== */
 async function init() {
-  connection = new Connection(CFG.RPC, "confirmed");
-  p0.textContent = `${CFG.P0_USDC.toFixed(6)} USDC (Fallback)`;
-
-  // 1) Status laden (INPI_MINT, Preise, TGE, Deposit-ATA aus Admin/KV)
+  // 1) Status zuerst laden (liefert rpc_url/mints/deposit etc.)
   await refreshStatus();
 
-  // 2) Phantom?
+  // 2) RPC-Verbindung anhand Admin/API (falls nicht vorhanden → Fallback)
+  if (!STATE.rpc_url) STATE.rpc_url = CFG.RPC;
+  if (!connection || currentRpcUrl !== STATE.rpc_url) {
+    connection = new Connection(STATE.rpc_url, "confirmed");
+    currentRpcUrl = STATE.rpc_url;
+  }
+
+  // 3) UI: Presale-Preis/State
+  p0.textContent = `${Number(STATE.price_presale ?? (CFG.P0_USDC*(1-CFG.PRESALE_DISCOUNT))).toFixed(6)} USDC`;
+
+  // 4) Phantom?
   if (window.solana?.isPhantom) {
     provider = window.solana;
     try {
@@ -91,47 +102,50 @@ async function init() {
     btnConnect.onclick = () => window.open("https://phantom.app", "_blank");
   }
 
-  // 3) Countdown
+  // 5) Countdown
   tickTGE();
   setInterval(tickTGE, 1000);
 }
 
-/* ---------- Status laden ---------- */
 async function refreshStatus(){
   try {
     const r = await fetch(`${CFG.API_BASE}/status`, { headers: { "accept":"application/json" }});
     const j = await r.json().catch(()=> ({}));
 
-    // Sicheres Lesen + Konvertierung (tge_ts kann ms oder sec sein)
-    const tge_raw = j?.tge_ts;
-    let tge_s = Number(tge_raw || 0);
-    if (tge_s > 1e12) tge_s = Math.floor(tge_s/1000);
+    STATE.rpc_url       = j?.rpc_url || CFG.RPC;
+    STATE.inpi_mint     = j?.inpi_mint || CFG.INPI_MINT;
+    STATE.usdc_mint     = j?.usdc_mint || CFG.USDC_MINT;
 
-    STATE.inpi_mint     = j?.inpi_mint || j?.INPI_MINT || CFG.INPI_MINT;
     STATE.presale_state = j?.presale_state || "pre";
-    STATE.tge_ts        = tge_s || CFG.TGE_TS_FALLBACK;
-    STATE.price_presale = (j?.presale_price_usdc != null) ? Number(j.presale_price_usdc) : null;
-    STATE.price_public  = (j?.public_price_usdc  != null) ? Number(j.public_price_usdc)  : null;
+    STATE.tge_ts        = j?.tge_ts || CFG.TGE_TS_FALLBACK; // Sekunden!
+    STATE.price_presale = j?.presale_price_usdc ?? null;
+    STATE.price_public  = j?.public_price_usdc ?? null;
     STATE.deposit_ata   = j?.deposit_usdc_ata || CFG.DEPOSIT_USDC_ATA_FALLBACK;
 
-    presaleState.textContent = STATE.presale_state;
-    const liveOrFallback = Number(STATE.price_presale ?? (CFG.P0_USDC*(1-CFG.PRESALE_DISCOUNT)));
-    p0.textContent = `${liveOrFallback.toFixed(6)} USDC`;
-
-    // Deposit UI
-    const dep = $("#depositAddr");
-    const depA = $("#depositSolscan");
-    if (dep) {
-      dep.textContent = STATE.deposit_ata || "—";
-      if (depA && STATE.deposit_ata) {
-        depA.href = solscan(STATE.deposit_ata);
-        depA.style.display = "inline";
-      } else if (depA) depA.style.display = "none";
-    }
   } catch (e) {
-    console.warn("Status-API offline, nutze Fallbacks.", e);
+    console.error(e);
+    STATE.rpc_url       = CFG.RPC;
+    STATE.inpi_mint     = CFG.INPI_MINT;
+    STATE.usdc_mint     = CFG.USDC_MINT;
+
+    STATE.presale_state = "pre";
+    STATE.tge_ts        = CFG.TGE_TS_FALLBACK;
+    STATE.price_presale = null;
+    STATE.price_public  = null;
+    STATE.deposit_ata   = CFG.DEPOSIT_USDC_ATA_FALLBACK;
     presaleState.textContent = "API offline";
   }
+
+  // UI aktualisieren
+  if (depositAddrEl) {
+    depositAddrEl.textContent = STATE.deposit_ata || "—";
+    if (depositSolscanA && STATE.deposit_ata) {
+      depositSolscanA.href = solscan(STATE.deposit_ata);
+      depositSolscanA.style.display = "inline";
+    } else if (depositSolscanA) depositSolscanA.style.display = "none";
+  }
+  presaleState.textContent = STATE.presale_state;
+  p0.textContent = `${Number(STATE.price_presale ?? (CFG.P0_USDC*(1-CFG.PRESALE_DISCOUNT))).toFixed(6)} USDC`;
 }
 
 function tickTGE(){
@@ -198,7 +212,7 @@ btnPresaleIntent.addEventListener("click", async () => {
   inFlight = true;
   intentMsg.textContent = "Prüfe Caps & registriere Intent …";
   try {
-    // optionaler Sign-In via Nachricht (falls Phantom signMessage unterstützt)
+    // optionaler Sign-In via Nachricht
     let sig_b58 = null, msg_str = null;
     if (provider.signMessage) {
       msg_str = `INPI Presale Intent\nwallet=${pubkey.toBase58()}\namount_usdc=${usdc}\nts=${Date.now()}`;
@@ -224,11 +238,21 @@ btnPresaleIntent.addEventListener("click", async () => {
       a.href = solscan(STATE.deposit_ata); a.target="_blank"; a.rel="noopener";
       a.textContent = `(Solscan)`;
       small.appendChild(a);
+
+      // Copy-Button
+      const copyBtn = document.createElement("button");
+      copyBtn.className = "secondary";
+      copyBtn.textContent = "Kopieren";
+      copyBtn.onclick = async () => {
+        try { await navigator.clipboard.writeText(STATE.deposit_ata); copyBtn.textContent = "Kopiert ✓"; setTimeout(()=>copyBtn.textContent="Kopieren",1000); } catch {}
+      };
+      small.appendChild(document.createTextNode(" "));
+      small.appendChild(copyBtn);
+
       intentMsg.appendChild(small);
     }
 
-    // Status neu laden (falls Price/State sich geändert haben)
-    refreshStatus();
+    await refreshStatus();
   } catch (e) {
     console.error(e);
     intentMsg.textContent = "API nicht erreichbar.";
@@ -239,8 +263,7 @@ btnPresaleIntent.addEventListener("click", async () => {
 
 /* ---------- SPL Balances ---------- */
 async function getSplBalance(mint, owner) {
-  // JSON-RPC via Proxy
-  const out = await fetch(CFG.RPC, {
+  const out = await fetch(STATE.rpc_url || CFG.RPC, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -268,7 +291,7 @@ async function refreshBalances() {
   if (!pubkey) return;
   try {
     const [u, i] = await Promise.all([
-      getSplBalance(CFG.USDC_MINT, pubkey),
+      getSplBalance(STATE.usdc_mint || CFG.USDC_MINT, pubkey),
       getSplBalance(STATE.inpi_mint || CFG.INPI_MINT, pubkey),
     ]);
     usdcBal.textContent = fmt(u, 2) + " USDC";
