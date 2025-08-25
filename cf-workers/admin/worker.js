@@ -280,7 +280,7 @@ async function hmac(secret, msg, algo = "SHA-256") {
 
 /* --------------------- UI (Dashboard + Konfigurator 2.0) --------------------- */
 function ui(env) {
-  // WICHTIG: Im <script> KEINE Backticks/Interpolation benutzen (nur concat).
+  // WICHTIG: Im <script> KEINE Backticks/Interpolation benutzen (nur String-Concats).
   const html = `<!doctype html>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>INPI Admin</title>
@@ -439,9 +439,10 @@ async function loadStatus(){
 async function reconcileNow(){
   var limit = prompt("Max. Anzahl zu spiegelnder Presale-Intents (z.B. 200):", "200");
   if (!limit) return;
+  var headers = otpHdr(); headers['content-type']='application/json';
   var r = await fetch('/admin/cron/reconcile', {
     method:'POST',
-    headers:{'content-type':'application/json', ...otpHdr()},
+    headers: headers,
     body: JSON.stringify({ limit: Number(limit) })
   });
   alert(await r.text());
@@ -459,19 +460,7 @@ async function peekQueue(){
 /* ------------- Konfigurator 2.0 ------------- */
 var SCHEMA = [
   // Core / Phasen
-  { key:"nft_gate_enabled", label:"NFT Gate aktiv?", type:"select", options:["false","true"] },
-{ key:"nft_gate_collection", label:"NFT Collection Mint", type:"text", hint:"Mint der Collection" },
-
-{ key:"dist_presale_bps", label:"Dist Presale (bps)", type:"number", min:0, max:10000, step:1 },
-{ key:"dist_dex_liquidity_bps", label:"Dist DEX/LP (bps)", type:"number", min:0, max:10000, step:1 },
-{ key:"dist_staking_bps", label:"Dist Staking (bps)", type:"number", min:0, max:10000, step:1 },
-{ key:"dist_ecosystem_bps", label:"Dist Ecosystem (bps)", type:"number", min:0, max:10000, step:1 },
-{ key:"dist_treasury_bps", label:"Dist Treasury (bps)", type:"number", min:0, max:10000, step:1 },
-{ key:"dist_team_bps", label:"Dist Team (bps)", type:"number", min:0, max:10000, step:1 },
-{ key:"dist_airdrop_nft_bps", label:"Dist Airdrop NFT (bps)", type:"number", min:0, max:10000, step:1 },
-{ key:"dist_buyback_reserve_bps", label:"Dist Buyback Reserve (bps)", type:"number", min:0, max:10000, step:1 }
   { key:"presale_state", label:"Presale State", type:"select", options:["pre","closed","claim","live"], hint:"Phase steuern" },
-
   { key:"tge_ts", label:"TGE (ms)", type:"number", min:0, step:1, hint:"Unix ms (Date.now())" },
   { key:"presale_price_usdc", label:"Presale Preis (USDC)", type:"number", min:0, step:"0.00000001" },
   { key:"public_price_usdc",  label:"Public Preis (USDC)",  type:"number", min:0, step:"0.00000001" },
@@ -481,7 +470,7 @@ var SCHEMA = [
 
   // Gates
   { key:"nft_gate_enabled", label:"NFT-Gate aktiv?", type:"select", options:["false","true"], hint:"Nur Käufer mit NFT-Collection" },
-  { key:"nft_gate_collection", label:"NFT Collection", type:"text", hint:"Kollections-Adresse" },
+  { key:"gate_collection", label:"NFT Collection", type:"text", hint:"Collection-Adresse" },
   { key:"public_mint_enabled", label:"Public-Gate aktiv?", type:"select", options:["false","true"], hint:"Ohne NFT erlaubt" },
   { key:"public_mint_price_usdc", label:"Public-Preis (USDC)", type:"number", min:0, step:"0.000001" },
   { key:"public_mint_fee_bps", label:"Public Fee (bps)", type:"number", min:0, max:10000, step:1 },
@@ -596,7 +585,7 @@ async function loadForm(){
     grid.appendChild(input);
 
     var hint = el("div", { class:"hint" }, fld.hint||"");
-    grid.appendChild(el("div")); // spacer for grid col 1
+    grid.appendChild(el("div"));
     grid.appendChild(hint);
   }
 }
@@ -639,7 +628,8 @@ async function saveChanged(){
   if (err) { alert(err); return; }
   var entries = collectChanged();
   if (Object.keys(entries).length===0){ alert("Keine Änderungen"); return; }
-  var r = await fetch('/admin/config/setmany', { method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({ entries: entries }) });
+  var headers = otpHdr(); headers['content-type']='application/json';
+  var r = await fetch('/admin/config/setmany', { method:'POST', headers: headers, body: JSON.stringify({ entries: entries }) });
   alert(await r.text());
   loadForm();
 }
@@ -663,21 +653,24 @@ async function setOne(){
   var key = document.getElementById('k').value.trim();
   var value = document.getElementById('v').value;
   if(!key){ alert('key fehlt'); return; }
-  var r = await fetch('/admin/config/set', {method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({key:key,value:value})});
+  var headers = otpHdr(); headers['content-type']='application/json';
+  var r = await fetch('/admin/config/set', {method:'POST', headers: headers, body: JSON.stringify({key:key,value:value})});
   alert(await r.text()); loadRaw();
 }
 async function delOne(){
   var key = document.getElementById('k').value.trim();
   if(!key){ alert('key fehlt'); return; }
   if(!confirm('Wirklich löschen: ' + key + ' ?')) return;
-  var r = await fetch('/admin/config/delete', {method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({key:key})});
+  var headers = otpHdr(); headers['content-type']='application/json';
+  var r = await fetch('/admin/config/delete', {method:'POST', headers: headers, body: JSON.stringify({key:key})});
   alert(await r.text()); loadRaw();
 }
 async function setMany(){
   var txt = document.getElementById('batch').value||"{}";
   var obj;
   try{ obj = JSON.parse(txt); }catch(e){ alert('Kein gültiges JSON'); return; }
-  var r = await fetch('/admin/config/setmany', {method:'POST', headers:{'content-type':'application/json', ...otpHdr()}, body: JSON.stringify({entries: obj})});
+  var headers = otpHdr(); headers['content-type']='application/json';
+  var r = await fetch('/admin/config/setmany', {method:'POST', headers: headers, body: JSON.stringify({entries: obj})});
   alert(await r.text()); loadRaw();
 }
 
