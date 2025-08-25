@@ -6,28 +6,28 @@
 /* ==================== KONFIG ==================== */
 const CFG = {
   RPC: "https://inpinity.online/rpc",
-  INPI_MINT: "<DEIN_INPI_MINT>",
+  INPI_MINT: "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
+  // du hast diese USDC-Adresse verifiziert – wir übernehmen sie 1:1:
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   API_BASE: "https://inpinity.online/api/token",
 
-  // Fallbacks, falls API mal nichts liefert:
-  P0_USDC: 0.00031415,         // Basispreis
-  PRESALE_DISCOUNT: 0.10,      // 10% Discount fürs Gate-Fenster (Fallback)
+  // Fallbacks (wenn API mal nichts liefert)
+  P0_USDC: 0.00031415,
+  PRESALE_DISCOUNT: 0.10,
+
+  // Presale-Deposit (USDC-ATA) – Fallback
+  DEPOSIT_USDC_ATA_FALLBACK: "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
+  // TGE-Zeitpunkt (Fallback: +90 Tage)
+  TGE_TS_FALLBACK: Math.floor(Date.now()/1000) + 60*60*24*90
 };
 
 /* ================ SOLANA / PHANTOM ================ */
-const { Connection, PublicKey } = solanaWeb3; // Phantom injiziert solanaWeb3
+const { Connection, PublicKey } = solanaWeb3;
 
-// Helfer
 const $ = (sel) => document.querySelector(sel);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-const isB58 = (s) => /^[1-9A-HJ-NP-Za-km-z]+$/.test(s) && s.length >= 32 && s.length <= 44;
 const short = (a) => (a?.slice(0, 4) + "…" + a?.slice(-4));
-
-function fmt(n, d = 2) {
-  if (n === null || n === undefined || isNaN(n)) return "–";
-  return Number(n).toLocaleString("de-DE", { maximumFractionDigits: d });
-}
+function fmt(n, d = 2) { if (n == null || isNaN(n)) return "–"; return Number(n).toLocaleString("de-DE",{maximumFractionDigits:d}); }
 function solscan(addr){ return `https://solscan.io/account/${addr}`; }
 
 // UI-Refs
@@ -44,32 +44,30 @@ const btnPresaleIntent = $("#btnPresaleIntent");
 const btnHowTo = $("#btnHowTo");
 const intentMsg = $("#intentMsg");
 
-// State
 let connection = null;
 let provider = null; // Phantom
 let pubkey = null;
 let POLL = null;
 
 const STATE = {
-  price_presale: null,   // aus /status.presale_price_usdc
-  price_public: null,    // aus /status.public_price_usdc (optional)
-  presale_state: "pre",  // "pre" | "public" | "closed"
-  tge_ts: null,          // unix seconds
-  deposit_ata: null      // USDC-ATA (Vault/Deposit)
+  price_presale: null,
+  price_public: null,
+  presale_state: "pre",
+  tge_ts: null,
+  deposit_ata: null
 };
 
 function nowSec(){ return Math.floor(Date.now()/1000); }
 
-/* ---------- Preis/Erwartung dynamisch aus Status ---------- */
+/* ---------- Preis/Erwartung ---------- */
 function currentPriceUSDC() {
   if (STATE.presale_state === "pre" && STATE.price_presale) return STATE.price_presale;
   if (STATE.presale_state === "public" && STATE.price_public) return STATE.price_public;
-  // Fallback: Presale-Fallback mit Discount
   return CFG.P0_USDC * (1 - CFG.PRESALE_DISCOUNT);
 }
 function calcExpectedInpi(usdc) {
   if (!usdc || usdc <= 0) return "–";
-  const price = currentPriceUSDC();               // USDC / 1 INPI
+  const price = currentPriceUSDC();   // USDC pro 1 INPI
   const tokens = usdc / price;
   return fmt(tokens, 0) + " INPI";
 }
@@ -79,53 +77,57 @@ async function init() {
   connection = new Connection(CFG.RPC, "confirmed");
   p0.textContent = `${CFG.P0_USDC.toFixed(6)} USDC (Fallback)`;
 
-  // 1) Status ziehen
+  // 1) Status laden
   await refreshStatus();
 
-  // 2) Phantom vorhanden?
+  // 2) Phantom?
   if (window.solana?.isPhantom) {
     provider = window.solana;
-    // Auto-connect wenn vertraut
-    try { await provider.connect({ onlyIfTrusted: true }).then(({ publicKey }) => onConnected(publicKey)); } catch {}
+    try {
+      await provider.connect({ onlyIfTrusted: true })
+        .then(({ publicKey }) => onConnected(publicKey));
+    } catch {}
     btnConnect.disabled = false;
   } else {
     btnConnect.textContent = "Phantom installieren";
     btnConnect.onclick = () => window.open("https://phantom.app", "_blank");
   }
 
-  // 3) Countdown zu TGE
+  // 3) Countdown
   tickTGE();
   setInterval(tickTGE, 1000);
 }
 
-// Status von API holen und UI aktualisieren
 async function refreshStatus(){
   try {
     const r = await fetch(`${CFG.API_BASE}/status`, { headers: { "accept":"application/json" }});
     const j = await r.json().catch(()=> ({}));
     STATE.presale_state  = j?.presale_state || "pre";
-    STATE.tge_ts         = j?.tge_ts || null;
+    STATE.tge_ts         = j?.tge_ts || CFG.TGE_TS_FALLBACK;
     STATE.price_presale  = j?.presale_price_usdc ?? null;
     STATE.price_public   = j?.public_price_usdc ?? null;
-    STATE.deposit_ata    = j?.deposit_usdc_ata || null;
-    // Deposit-Box im UI aktualisieren
-const dep = document.querySelector("#depositAddr");
-const depA = document.querySelector("#depositSolscan");
-if (dep) {
-  if (STATE.deposit_ata) {
-    dep.textContent = STATE.deposit_ata;
-    if (depA) { depA.href = `https://solscan.io/account/${STATE.deposit_ata}`; depA.style.display = "inline"; }
-  } else {
-    dep.textContent = "—";
-    if (depA) depA.style.display = "none";
-  }
-}
-
-    presaleState.textContent = STATE.presale_state;
-    if (STATE.price_presale) p0.textContent = `${Number(STATE.price_presale).toFixed(6)} USDC (live)`;
-  } catch (e) {
+    STATE.deposit_ata    = j?.deposit_usdc_ata || CFG.DEPOSIT_USDC_ATA_FALLBACK;
+  } catch {
+    STATE.presale_state  = "pre";
+    STATE.tge_ts         = CFG.TGE_TS_FALLBACK;
+    STATE.price_presale  = null;
+    STATE.price_public   = null;
+    STATE.deposit_ata    = CFG.DEPOSIT_USDC_ATA_FALLBACK;
     presaleState.textContent = "API offline";
   }
+
+  // UI aktualisieren
+  const dep = document.querySelector("#depositAddr");
+  const depA = document.querySelector("#depositSolscan");
+  if (dep) {
+    dep.textContent = STATE.deposit_ata || "—";
+    if (depA && STATE.deposit_ata) {
+      depA.href = solscan(STATE.deposit_ata);
+      depA.style.display = "inline";
+    } else if (depA) depA.style.display = "none";
+  }
+  presaleState.textContent = STATE.presale_state;
+  p0.textContent = `${Number(STATE.price_presale ?? (CFG.P0_USDC*(1-CFG.PRESALE_DISCOUNT))).toFixed(6)} USDC`;
 }
 
 function tickTGE(){
@@ -150,14 +152,9 @@ btnConnect.addEventListener("click", async () => {
 function onConnected(publicKey){
   pubkey = publicKey;
   walletAddr.textContent = publicKey.toBase58();
-  // Events
-  provider?.on?.("accountChanged", (pk) => {
-    if (!pk) { onDisconnected(); return; }
-    onConnected(pk);
-  });
+  provider?.on?.("accountChanged", (pk) => { if (!pk) { onDisconnected(); return; } onConnected(pk); });
   provider?.on?.("disconnect", onDisconnected);
 
-  // Balances & Polling
   refreshBalances();
   clearInterval(POLL);
   POLL = setInterval(refreshBalances, 30000);
@@ -170,7 +167,7 @@ function onDisconnected(){
   clearInterval(POLL);
 }
 
-/* ---------- UI Interaktionen ---------- */
+/* ---------- UI ---------- */
 inpAmount.addEventListener("input", () => {
   const usdc = Number(inpAmount.value || "0");
   expectedInpi.textContent = calcExpectedInpi(usdc);
@@ -186,7 +183,7 @@ btnHowTo.addEventListener("click", () => {
   );
 });
 
-/* ---------- Presale Intent (mit Message-Signatur) ---------- */
+/* ---------- Presale Intent ---------- */
 let inFlight = false;
 btnPresaleIntent.addEventListener("click", async () => {
   if (inFlight) return;
@@ -197,7 +194,7 @@ btnPresaleIntent.addEventListener("click", async () => {
   inFlight = true;
   intentMsg.textContent = "Prüfe Caps & registriere Intent …";
   try {
-    // Optional: Intent signieren = „ich bin Besitzer dieser Wallet“
+    // optionaler Sign-In via Nachricht
     let sig_b58 = null, msg_str = null;
     if (provider.signMessage) {
       msg_str = `INPI Presale Intent\nwallet=${pubkey.toBase58()}\namount_usdc=${usdc}\nts=${Date.now()}`;
@@ -209,18 +206,13 @@ btnPresaleIntent.addEventListener("click", async () => {
     const r = await fetch(`${CFG.API_BASE}/presale/intent`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        wallet: pubkey.toBase58(),
-        amount_usdc: usdc,
-        sig_b58, msg_str
-      })
+      body: JSON.stringify({ wallet: pubkey.toBase58(), amount_usdc: usdc, sig_b58, msg_str })
     });
     const text = await r.text();
-    // sicher rendern – kein innerHTML mit untrusted Daten:
+
     intentMsg.textContent = "";
     const p = document.createElement("p"); p.textContent = text; intentMsg.appendChild(p);
 
-    // Falls Deposit-ATA aus Status vorhanden, biete Link
     if (STATE.deposit_ata) {
       const small = document.createElement("small");
       small.innerText = `Deposit-Adresse (USDC): ${STATE.deposit_ata} `;
@@ -231,7 +223,6 @@ btnPresaleIntent.addEventListener("click", async () => {
       intentMsg.appendChild(small);
     }
 
-    // nach Intent Status neu laden (falls Price/State sich geändert hat)
     refreshStatus();
   } catch (e) {
     console.error(e);
@@ -243,7 +234,6 @@ btnPresaleIntent.addEventListener("click", async () => {
 
 /* ---------- SPL Balances ---------- */
 async function getSplBalance(mint, owner) {
-  // via RPC-Proxy → getTokenAccountsByOwner
   const out = await fetch(CFG.RPC, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -284,13 +274,12 @@ async function refreshBalances() {
   }
 }
 
-/* ---------- Utilities ---------- */
-function bs58Encode(bytes){ // kleine Helper-Implementierung ohne externes Bundle
+/* ---------- bs58 Helper ---------- */
+function bs58Encode(bytes){
   const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
   const BASE = BigInt(58);
   let x = 0n; for (const b of bytes) x = (x << 8n) + BigInt(b);
   let out = ""; while (x > 0n) { const mod = x % BASE; out = alphabet[Number(mod)] + out; x = x / BASE; }
-  // führende Nullen:
   let zeros = 0; for (const b of bytes) { if (b === 0) zeros++; else break; }
   return "1".repeat(zeros) + out;
 }
