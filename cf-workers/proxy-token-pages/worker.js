@@ -1,34 +1,30 @@
-// leitet https://inpinity.online/token* -> https://inpinity-token-site.pages.dev/*
-const ORIGIN = 'https://inpinity-token-site.pages.dev';
-
+// Leitet https://inpinity.online/token* auf deine Pages-Site weiter
 export default {
   async fetch(req) {
     const url = new URL(req.url);
-    if (!url.pathname.startsWith('/token')) {
-      return new Response('Not found', { status: 404 });
+    const origin = "https://inpinity-token-site.pages.dev"; // DEINE Pages-URL
+
+    // /token oder /token/ -> index.html
+    if (url.pathname === "/token" || url.pathname === "/token/") {
+      const r = await fetch(origin + "/token/index.html" + url.search, { headers: { "cache-control": "no-cache" } });
+      return withProxyHeaders(r);
     }
 
-    // /token-Präfix entfernen: /token -> /, /token/foo -> /foo
-    let path = url.pathname.replace(/^\/token/, '') || '/';
-    const target = new URL(path + url.search, ORIGIN);
-
-    if (!['GET','HEAD'].includes(req.method)) {
-      return new Response('Method Not Allowed', { status: 405 });
+    // Unterpfade (Assets, JS, CSS, Bilder)
+    if (url.pathname.startsWith("/token/")) {
+      const r = await fetch(origin + url.pathname + url.search, { headers: { "cache-control": "no-cache" } });
+      return withProxyHeaders(r);
     }
 
-    const res = await fetch(new Request(target, {
-      method: req.method,
-      headers: req.headers,
-    }));
-
-    // Fallback: bei 404 und „ordnerähnlichem“ Pfad auf /index.html
-    if (res.status === 404 && !/\.\w{1,8}$/.test(path)) {
-      return fetch(new URL('/index.html', ORIGIN));
-    }
-
-    // Kein aggressives Caching
-    const h = new Headers(res.headers);
-    h.set('cache-control', 'no-cache');
-    return new Response(res.body, { status: res.status, headers: h });
+    return new Response("Not found", { status: 404 });
   }
+};
+
+function withProxyHeaders(r){
+  const h = new Headers(r.headers);
+  h.set("x-proxy", "token-pages");
+  h.set("access-control-allow-origin", "*");
+  h.set("referrer-policy", "strict-origin-when-cross-origin");
+  h.set("x-content-type-options", "nosniff");
+  return new Response(r.body, { status: r.status, headers: h });
 }
