@@ -1,8 +1,8 @@
-# Pfad: cf-workers/rpc-proxy/wrangler.toml
-name = "rpc-proxy"
+# cf-workers/proxy-token-pages/wrangler.toml
+name = "proxy-token-pages"
 main = "worker.js"
 compatibility_date = "2024-12-01"
 
 routes = [
-  { pattern = "inpinity.online/rpc", zone_name = "inpinity.online" }
+  { pattern = "inpinity.online/token*", zone_name = "inpinity.online" }
 ]
