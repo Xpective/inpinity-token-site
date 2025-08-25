@@ -1,26 +1,34 @@
-// Pfad: cf-workers/proxy-token-pages/worker.js
-// Aufgabe: leitet https://inpinity.online/token* auf deine Pages-Site
+// leitet https://inpinity.online/token* -> https://inpinity-token-site.pages.dev/*
+const ORIGIN = 'https://inpinity-token-site.pages.dev';
 
 export default {
   async fetch(req) {
     const url = new URL(req.url);
-    const origin = "https://inpinity-token-site.pages.dev"; // <-- DEINE Pages-URL
-
-    // /token oder /token/ -> index.html
-    if (url.pathname === "/token" || url.pathname === "/token/") {
-      return fetch(origin + "/token/index.html" + url.search, {
-        headers: { "cache-control": "no-cache" }
-      });
+    if (!url.pathname.startsWith('/token')) {
+      return new Response('Not found', { status: 404 });
     }
 
-    // Unterpfade 1:1 weiterreichen (Assets, JS, JSON, Bilder)
-    if (url.pathname.startsWith("/token/")) {
-      return fetch(origin + url.pathname + url.search, {
-        headers: { "cache-control": "no-cache" }
-      });
+    // /token-Präfix entfernen: /token -> /, /token/foo -> /foo
+    let path = url.pathname.replace(/^\/token/, '') || '/';
+    const target = new URL(path + url.search, ORIGIN);
+
+    if (!['GET','HEAD'].includes(req.method)) {
+      return new Response('Method Not Allowed', { status: 405 });
     }
 
-    // alles andere ignorieren
-    return new Response("Not found", { status: 404 });
+    const res = await fetch(new Request(target, {
+      method: req.method,
+      headers: req.headers,
+    }));
+
+    // Fallback: bei 404 und „ordnerähnlichem“ Pfad auf /index.html
+    if (res.status === 404 && !/\.\w{1,8}$/.test(path)) {
+      return fetch(new URL('/index.html', ORIGIN));
+    }
+
+    // Kein aggressives Caching
+    const h = new Headers(res.headers);
+    h.set('cache-control', 'no-cache');
+    return new Response(res.body, { status: res.status, headers: h });
   }
 }
