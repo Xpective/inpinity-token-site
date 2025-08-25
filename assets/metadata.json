@@ -1,0 +1,23 @@
+{
+  "name": "Inpinity",
+  "symbol": "INPI",
+  "description": "Inpinity (INPI) – utility & staking token of the Inpinity ecosystem.",
+  "image": "ipfs://bafybeickwitakjzf46dfqpklbmkg6jyastcksm7lztm4qdwt7cyro7s4bq",
+  "external_url": "https://inpinity.online/token",
+  "attributes": [
+    { "trait_type": "Decimals", "value": "9" },
+    { "trait_type": "Supply", "value": "3,141,592,653 INPI" }
+  ],
+  "properties": {
+    "category": "image",
+    "files": [
+      {
+        "uri": "ipfs://bafybeickwitakjzf46dfqpklbmkg6jyastcksm7lztm4qdwt7cyro7s4bq",
+        "type": "image/png"
+      }
+    ],
+    "creators": [
+      { "address": "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp", "share": 100 }
+    ]
+  }
+}
