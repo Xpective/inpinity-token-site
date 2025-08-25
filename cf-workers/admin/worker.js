@@ -459,6 +459,17 @@ async function peekQueue(){
 /* ------------- Konfigurator 2.0 ------------- */
 var SCHEMA = [
   // Core / Phasen
+  { key:"nft_gate_enabled", label:"NFT Gate aktiv?", type:"select", options:["false","true"] },
+{ key:"nft_gate_collection", label:"NFT Collection Mint", type:"text", hint:"Mint der Collection" },
+
+{ key:"dist_presale_bps", label:"Dist Presale (bps)", type:"number", min:0, max:10000, step:1 },
+{ key:"dist_dex_liquidity_bps", label:"Dist DEX/LP (bps)", type:"number", min:0, max:10000, step:1 },
+{ key:"dist_staking_bps", label:"Dist Staking (bps)", type:"number", min:0, max:10000, step:1 },
+{ key:"dist_ecosystem_bps", label:"Dist Ecosystem (bps)", type:"number", min:0, max:10000, step:1 },
+{ key:"dist_treasury_bps", label:"Dist Treasury (bps)", type:"number", min:0, max:10000, step:1 },
+{ key:"dist_team_bps", label:"Dist Team (bps)", type:"number", min:0, max:10000, step:1 },
+{ key:"dist_airdrop_nft_bps", label:"Dist Airdrop NFT (bps)", type:"number", min:0, max:10000, step:1 },
+{ key:"dist_buyback_reserve_bps", label:"Dist Buyback Reserve (bps)", type:"number", min:0, max:10000, step:1 }
   { key:"presale_state", label:"Presale State", type:"select", options:["pre","closed","claim","live"], hint:"Phase steuern" },
   { key:"tge_ts", label:"TGE (ms)", type:"number", min:0, step:1, hint:"Unix ms (Date.now())" },
   { key:"presale_price_usdc", label:"Presale Preis (USDC)", type:"number", min:0, step:"0.00000001" },
