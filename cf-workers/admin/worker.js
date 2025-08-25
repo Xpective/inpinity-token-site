@@ -608,6 +608,10 @@ function validate(){
     var fld = SCHEMA[i];
     var elx = document.getElementById("fld_"+fld.key);
     if (!elx) continue;
+
+    // NEU: Nur geänderte Felder validieren
+    if (!elx.dataset || elx.dataset.changed !== "1") continue;
+
     if (elx.type==="number"){
       var val = elx.value==="" ? null : Number(elx.value);
       if (val!=null){
