@@ -55,7 +55,10 @@
         <code id="depositAddr">—</code>
         <a id="depositSolscan" href="#" target="_blank" rel="noopener" style="display:none">(Solscan)</a>
       </p>
-      <p class="muted">Sende nur <b>USDC (SPL)</b>. Die Presale-QR aus dem nächsten Schritt nutzt den <b>Owner-Pubkey</b> (Wallet) und leitet automatisch an die USDC-ATA weiter.</p>
+      <p class="muted">
+        Sende nur <b>USDC (SPL)</b>. Die Presale-QR aus dem nächsten Schritt nutzt den <b>Owner-Pubkey</b>
+        und leitet automatisch an die USDC-ATA weiter.
+      </p>
     </section>
 
     <!-- Presale Intent -->
@@ -75,13 +78,13 @@
         <div class="row" style="gap:1rem;align-items:center;flex-wrap:wrap">
           <img id="inpi-qr" alt="Scan & pay via Solana Pay" width="240" height="240" style="border:1px solid #eee;border-radius:8px;display:none"/>
           <div class="col">
-            <p style="margin:0 0 .5rem 0">Öffnen mit Wallet:</p>
-            <div class="links" style="display:flex;gap:.5rem;flex-wrap:wrap">
-              <a id="btn-phantom"  class="btn" target="_blank" rel="noopener">In Phantom öffnen</a>
-              <a id="btn-solflare" class="btn" target="_blank" rel="noopener">In Solflare öffnen</a>
-              <a id="btn-solpay"   class="btn">Direkter Solana-Pay Link</a>
-            </div>
-            <p class="muted" style="margin:.6rem 0 0 0">Bitte vom selben Wallet senden wie beim Intent.</p>
+            <p style="margin:0 0 .5rem 0">
+              <b>So zahlst du:</b> Scanne den QR-Code mit deiner Wallet <u>oder</u> kopiere die USDC-Adresse oben
+              und sende den Betrag manuell (SPL-USDC, 6 Dezimalstellen).
+            </p>
+            <p class="muted" style="margin:.4rem 0 0 0">
+              Bitte vom <b>selben Wallet</b> senden, das den Intent registriert hat.
+            </p>
           </div>
         </div>
       </div>
@@ -92,10 +95,17 @@
     <!-- EARLY CLAIM ($1 Fee) -->
     <section class="card" id="earlyBox" style="display:none">
       <h2>Claim (Early)</h2>
-      <p>Du kannst deine vorgekauften INPI schon vor TGE erhalten. Dafür fällt eine <b>Gebühr von 1&nbsp;USDC</b> an.</p>
+      <p>
+        Du kannst deine vorgekauften INPI schon vor TGE erhalten. Dafür fällt eine
+        <b>Gebühr von 1&nbsp;USDC</b> an.
+      </p>
+      <p class="muted" style="margin:.25rem 0 .5rem">
+        <b>Kein Early-Claim?</b> Dann erhältst du vor dem offiziellen USDC-Pool einen
+        <b>Bonus-Airdrop von ca. 3–7&nbsp;%</b> auf deine offenen INPI.
+      </p>
       <div class="stats"><div><b>Claimbar:</b> <span id="earlyExpected">–</span></div></div>
       <div class="row" style="gap:.6rem;flex-wrap:wrap">
-        <button id="btnEarlyClaim">Claim starten</button>
+        <button id="btnClaim">Claim (1&nbsp;USDC Fee)</button>
         <span class="muted">Auszahlung erfolgt, sobald die Fee erkannt ist.</span>
       </div>
 
@@ -104,12 +114,9 @@
         <div class="row" style="gap:1rem;align-items:center;flex-wrap:wrap">
           <img id="early-qr" alt="Scan & pay Early-Claim Fee" width="240" height="240" style="border:1px solid #eee;border-radius:8px;display:none"/>
           <div class="col">
-            <p style="margin:0 0 .5rem 0">Öffnen mit Wallet:</p>
-            <div class="links" style="display:flex;gap:.5rem;flex-wrap:wrap">
-              <a id="btn-phantom-early"  class="btn" target="_blank" rel="noopener">In Phantom öffnen</a>
-              <a id="btn-solflare-early" class="btn" target="_blank" rel="noopener">In Solflare öffnen</a>
-              <a id="btn-solpay-early"   class="btn">Direkter Solana-Pay Link</a>
-            </div>
+            <p style="margin:0 0 .5rem 0">
+              <b>So zahlst du:</b> QR-Code mit Wallet scannen <u>oder</u> Adresse kopieren und 1&nbsp;USDC (SPL) senden.
+            </p>
             <p class="muted" id="earlyMsg"></p>
             <div style="margin-top:.6rem">
               <label class="muted">Optional: Fee-Tx-Signatur (beschleunigt die Zuordnung)</label>
@@ -150,7 +157,9 @@
   <script type="application/ld+json">
   {"@context":"https://schema.org","@type":"Cryptocurrency","name":"Inpinity Token","symbol":"INPI","url":"https://inpinity.online/token"}
   </script>
+  <!-- Solana Web3 (global: solanaWeb3) -->
   <script defer src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.98.4/lib/index.iife.min.js"></script>
+  <!-- Deine Logik -->
   <script type="module" src="./app.js"></script>
 </body>
 </html>
