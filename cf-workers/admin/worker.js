@@ -124,7 +124,6 @@ export default {
       return pass(r);
     }
 
-    // Early-Claims in OPS anstoßen
     if (req.method === "POST" && p === "/admin/cron/early-claims") {
       if (!(await requireJson(req))) return badCT();
       const body = await req.json().catch(() => ({}));
@@ -173,21 +172,21 @@ const DEFAULT_KEYS = [
   "tge_ts",
   "presale_price_usdc",
   "public_price_usdc",
-  "public_mint_price_usdc",         // NEU: public mint price (Admin nutzt den oft)
+  "public_mint_price_usdc",
   "presale_target_usdc",
   "cap_per_wallet_usdc",
   "presale_deposit_usdc",
-  "public_rpc_url",                 // NEU: öffentliches RPC (z.B. Helius)
+  "public_rpc_url",
 
   // Gate (KV & ENV-Fallbacks)
   "nft_gate_enabled",
   "gate_collection",
   "nft_gate_collection",
-  "gate_mint",                      // NEU: Gate per Mint als Alternative
+  "gate_mint",
 
   // Preis-Tiers
-  "tier_nft_price_usdc",            // NEU
-  "tier_public_price_usdc",         // NEU
+  "tier_nft_price_usdc",
+  "tier_public_price_usdc",
 
   // Public Mint & Fees
   "public_mint_enabled",
@@ -228,11 +227,11 @@ const DEFAULT_KEYS = [
   "floor_daily_cap_usdc",
 
   // Early-Claim + Bonus + separater Fee-ATA
-  "early_claim_enabled",            // NEU
-  "early_claim_fee_bps",            // optional bps-Modell
-  "early_claim_fee_dest",           // "lp" | "treasury" (nur Info/Auswertung)
-  "wait_bonus_bps",                 // Bonus bei Warten (Airdrop)
-  "early_fee_usdc_ata",             // NEU: separater USDC-ATA für $1 Fee
+  "early_claim_enabled",
+  "early_claim_fee_bps",
+  "early_claim_fee_dest",
+  "wait_bonus_bps",
+  "early_fee_usdc_ata",
 
   // Creator Streams
   "creator_usdc_stream_monthly_usdc",
