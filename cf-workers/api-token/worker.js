@@ -71,8 +71,8 @@ export default {
         return J({
           ok: true,
           wallet,
-          usdc,
-          inpi,
+          usdc,           // { amount, decimals, uiAmount, uiAmountString }
+          inpi,           // ggf. null wenn INPI_MINT nicht gesetzt
           updated_at: Date.now()
         });
       }
@@ -181,26 +181,36 @@ async function getPublicRpcUrl(env) {
   }
 }
 
+// ------ WICHTIG: robustes JSON-Parsing (fix für "Unexpected end of JSON input")
 async function rpcCall(rpcUrl, method, params) {
   const body = { jsonrpc: "2.0", id: 1, method, params };
   const r = await fetch(rpcUrl, {
     method: "POST",
-    headers: { "content-type":"application/json" },
+    headers: { "content-type":"application/json", "accept":"application/json" },
     body: JSON.stringify(body)
   });
-  const j = await r.json();
+
+  const txt = await r.text();               // erst Text lesen
+  let j;
+  try { j = JSON.parse(txt); }              // dann sicher parsen
+  catch (e) { throw new Error(`rpc_bad_json: ${txt.slice(0,120)}`); }
+
   if (j.error) throw new Error(j.error?.message || "rpc_error");
+  if (!("result" in j)) throw new Error("rpc_no_result");
   return j.result;
 }
 
-async function getSplBalance(rpc, owner, mint) {
-  const res = await rpcCall(rpc, "getTokenAccountsByOwner", [
+async function getSplBalance(rpcUrl, owner, mint) {
+  const res = await rpcCall(rpcUrl, "getTokenAccountsByOwner", [
     owner, { mint }, { encoding: "jsonParsed", commitment: "confirmed" }
   ]);
+
+  const arr = res?.value || [];
   let raw = 0n, decimals = 0;
-  for (const it of res?.value || []) {
+  for (const it of arr) {
     const info = it?.account?.data?.parsed?.info;
     const ta = info?.tokenAmount;
+    if (!ta) continue;
     decimals = Number(ta?.decimals ?? decimals ?? 0);
     raw += BigInt(ta?.amount || "0");
   }
@@ -221,7 +231,7 @@ async function passesNftGate(env, owner, gateMint) {
       if (amt > 0) return true;
     }
     return false;
-  } catch { return true; }
+  } catch { return true; } // bei RPC-Hickups nicht blocken
 }
 
 function makeSolanaPayUrl({ to, amount, splToken, label, message }) {
