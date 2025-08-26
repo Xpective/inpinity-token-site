@@ -43,7 +43,7 @@ export default {
         const priceWithout =
           toNumOrNull(cfg.tier_public_price_usdc) ??
           toNumOrNull(cfg.public_price_usdc) ??
-          null; // absichtlich kein "automatisches *10"
+          null; // absichtlich kein automatisches *10
 
         return J({
           rpc_url,
@@ -107,10 +107,10 @@ export default {
           cfg.INPI_MINT ? getSplBalance(rpc, wallet, cfg.INPI_MINT) : Promise.resolve(null)
         ]);
 
-        // Gate prüfen: zuerst Collection (DAS), sonst Mint
+        // Gate prüfen: bevorzugt ADMIN/CONFIG, Fallback ENV
         let gate_ok = true;
-        const gateCollection = String(env.GATE_COLLECTION || "").trim();
-        const gateMint = String(env.GATE_MINT || "").trim();
+        const gateCollection = String(cfg.gate_collection || env.GATE_COLLECTION || "").trim();
+        const gateMint       = String(cfg.gate_mint       || env.GATE_MINT       || "").trim();
         if (gateCollection) {
           gate_ok = await passesCollectionGate(env, wallet, gateCollection);
         } else if (gateMint) {
@@ -147,9 +147,11 @@ export default {
         const depo = cfg.presale_deposit_usdc || "";
         if (!isAddress(depo)) return J({ ok:false, error:"deposit_not_ready" }, 503);
 
-        // Gate durchsetzen (nur wenn gesetzt)
-        const gateCollection = String(env.GATE_COLLECTION || "").trim();
-        const gateMint = String(env.GATE_MINT || "").trim();
+        // Gate durchsetzen (bevorzugt ADMIN/CONFIG, Fallback ENV)
+        const cfgForGate = cfg; // readPublicConfig(env) oben bereits geladen
+        const gateCollection = String(cfgForGate.gate_collection || env.GATE_COLLECTION || "").trim();
+        const gateMint       = String(cfgForGate.gate_mint       || env.GATE_MINT       || "").trim();
+
         if (gateCollection) {
           const ok = await passesCollectionGate(env, wallet, gateCollection);
           if (!ok) return J({ ok:false, error:"gate_denied" }, 403);
