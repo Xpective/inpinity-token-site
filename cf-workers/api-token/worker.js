@@ -2,13 +2,13 @@
 // KV-Bindings: CONFIG, PRESALE, INPI_CLAIMS
 // Vars (optional): GATE_MINT, PRESALE_MIN_USDC, PRESALE_MAX_USDC, RPC_URL
 // Secrets (optional): HELIUS_API_KEY, RECONCILE_KEY
-// Neue Config-Keys (über Admin-Worker bereits im UI vorhanden):
-//   early_claim_enabled ("true"/"false"), early_claim_fee_bps (z.B. "200"),
-//   early_claim_fee_dest ("lp"|"treasury"), wait_bonus_bps (z.B. "300")
+// Neue Config-Keys (über Admin-Worker setzbar):
+//   early_claim_enabled ("true"/"false"), early_claim_fee_bps, early_claim_fee_dest ("lp"|"treasury"),
+//   wait_bonus_bps, early_fee_usdc_ata  <-- NEU: separates USDC-ATA für $1 Fee
 
-// ⚠️ KANONISCHE USDC-Adresse (Mainnet)
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC4wEGGkZwyTDt1v";
 const QR_SVC = "https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=";
+const EARLY_FLAT_USDC = 1; // $1 Fee
 
 function wantsJson(req, url) {
   const accept = (req.headers.get("accept") || "").toLowerCase();
@@ -21,7 +21,6 @@ export default {
       const url = new URL(req.url);
       const p = url.pathname;
 
-      // ---- CORS Preflight (global)
       if (req.method === "OPTIONS") {
         return new Response(null, { status: 204, headers: corsHeaders() });
       }
@@ -31,6 +30,10 @@ export default {
         const cfg = await readPublicConfig(env);
         const rpc_url = await getPublicRpcUrl(env);
         const early = await getEarlyConfig(env);
+
+        // Early: flat USD Fee + Ziel (separate ATA bevorzugt)
+        const feeDest = cfg.early_fee_usdc_ata || cfg.presale_deposit_usdc || "";
+
         return J({
           rpc_url,
           usdc_mint: USDC_MINT,
@@ -43,10 +46,16 @@ export default {
           cap_per_wallet_usdc: toNumOrNull(cfg.cap_per_wallet_usdc),
           presale_min_usdc: toNumOrNull(env.PRESALE_MIN_USDC),
           presale_max_usdc: toNumOrNull(env.PRESALE_MAX_USDC),
-          // Early-Claim/Boni sichtbar machen
-          early_claim_enabled: early.enabled,
+
+          // Early-Claim/Boni
+          early_claim: {
+            enabled: early.enabled,
+            flat_usdc: EARLY_FLAT_USDC,
+            fee_dest_wallet: feeDest
+          },
           early_claim_fee_bps: early.fee_bps,
           wait_bonus_bps: early.bonus_bps,
+
           updated_at: Date.now()
         });
       }
@@ -67,7 +76,7 @@ export default {
           decimals:v.decimals, updated_at:Date.now() });
       }
 
-      // ---- WALLET BALANCES (public)
+      // ---- WALLET BALANCES (public) (+ gate_ok)
       if (req.method === "GET" && p === "/api/token/wallet/balances") {
         const wallet = (url.searchParams.get("wallet") || "").trim();
         if (!isAddress(wallet)) return J({ ok:false, error:"bad_wallet" }, 400);
@@ -80,7 +89,11 @@ export default {
           cfg.INPI_MINT ? getSplBalance(rpc, wallet, cfg.INPI_MINT) : Promise.resolve(null)
         ]);
 
-        return J({ ok:true, wallet, usdc, inpi, updated_at:Date.now() });
+        let gate_ok = true;
+        const gateMint = String(env.GATE_MINT || "").trim();
+        if (gateMint) gate_ok = await passesNftGate(env, wallet, gateMint);
+
+        return J({ ok:true, wallet, usdc, inpi, gate_ok, updated_at:Date.now() });
       }
 
       // ---- PRESALE INTENT (public)
@@ -133,7 +146,7 @@ export default {
         return J({ ok:true, wallet, amount_usdc:amount, expected_inpi,
           deposit_usdc_ata:depo, usdc_mint:USDC_MINT,
           solana_pay_url:sp, phantom_universal_url:phantom, solflare_universal_url:solflare,
-          qr_url, label:"Inpinity Presale", message:"INPI Presale Contribution", updated_at:Date.now() });
+          qr_url, label:"INPI Presale", message:"INPI Presale Contribution", updated_at:Date.now() });
       }
 
       // ---- PRESALE RECONCILE (admin, idempotent)
@@ -155,7 +168,6 @@ export default {
         const early_net_claimed = Math.floor(claim.early?.net_claimed || 0);
         const pending_inpi = Math.max(0, total_inpi - early_net_claimed);
 
-        // Bonus nur vor Public/Claim-Phase als Vorschau
         const phase = String(cfg.presale_state || "pre");
         const bonus_preview = (phase === "pre" || phase === "closed")
           ? Math.floor(pending_inpi * (early.bonus_bps / 10000))
@@ -179,7 +191,7 @@ export default {
         });
       }
 
-      // ---- EARLY-CLAIM QUOTE (public)
+      // ---- EARLY-CLAIM QUOTE (public; bps-Modell bleibt verfügbar)
       if (req.method === "GET" && p === "/api/token/claim/early/quote") {
         const wallet = (url.searchParams.get("wallet") || "").trim();
         if (!isAddress(wallet)) return J({ ok:false, error:"bad_wallet" }, 400);
@@ -206,20 +218,111 @@ export default {
         });
       }
 
-      // ---- EARLY-CLAIM REQUEST (public → queued; Transfer macht OPS/Cron)
+      // ---- EARLY-CLAIM INTENT (public → $1 USDC Fee QR)
+      if (req.method === "POST" && p === "/api/token/claim/early-intent") {
+        if (!(await isJson(req))) return J({ ok:false, error:"bad_content_type" }, 415);
+        const { wallet } = await req.json().catch(()=>({}));
+        if (!isAddress(wallet)) return J({ ok:false, error:"bad_wallet" }, 400);
+
+        const early = await getEarlyConfig(env);
+        if (!early.enabled) return J({ ok:false, error:"early_disabled" }, 403);
+
+        const cfg = await readPublicConfig(env);
+        const dest = cfg.early_fee_usdc_ata || cfg.presale_deposit_usdc || "";
+        if (!isAddress(dest)) return J({ ok:false, error:"fee_dest_not_ready" }, 503);
+
+        const sp = makeSolanaPayUrl({
+          to: dest,
+          amount: EARLY_FLAT_USDC,
+          splToken: USDC_MINT,
+          label: "INPI Early Claim Fee",
+          message: "INPI Early Claim Fee"
+        });
+        const phantom = `https://phantom.app/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
+        const solflare = `https://solflare.com/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
+        const qr_url = `${QR_SVC}${encodeURIComponent(sp)}`;
+
+        return J({ ok:true, wallet, dest_wallet: dest, amount_usdc: EARLY_FLAT_USDC,
+          solana_pay_url: sp, phantom_universal_url: phantom, solflare_universal_url: solflare, qr_url });
+      }
+
+      // ---- EARLY-CLAIM CONFIRM (public → prüft $1 Fee, queued Claim)
+      if (req.method === "POST" && p === "/api/token/claim/confirm") {
+        if (!(await isJson(req))) return J({ ok:false, error:"bad_content_type" }, 415);
+        const { wallet, fee_signature } = await req.json().catch(()=>({}));
+        if (!isAddress(wallet)) return J({ ok:false, error:"bad_wallet" }, 400);
+        if (!/^[1-9A-HJ-NP-Za-km-z]{43,88}$/.test(String(fee_signature||"")))
+          return J({ ok:false, error:"bad_signature" }, 400);
+
+        // Idempotenz: Signatur schon verarbeitet?
+        const usedKey = `early_fee_tx:${fee_signature}`;
+        const usedVal = await env.INPI_CLAIMS.get(usedKey);
+        if (usedVal) {
+          try { const prev = JSON.parse(usedVal); return J({ ok:true, already:true, job_id: prev.job_id, wallet }); } catch {}
+          return J({ ok:true, already:true, wallet });
+        }
+
+        const cfg = await readPublicConfig(env);
+        const dest = cfg.early_fee_usdc_ata || cfg.presale_deposit_usdc || "";
+        if (!isAddress(dest)) return J({ ok:false, error:"fee_dest_not_ready" }, 503);
+
+        // Tx prüfen: >= $1 USDC vom wallet -> dest ATA
+        const rpc = await getPublicRpcUrl(env);
+        const tx = await rpcCall(rpc, "getTransaction", [
+          String(fee_signature),
+          { maxSupportedTransactionVersion: 0, commitment: "confirmed" }
+        ]).catch((e) => { throw new Error("get_tx_failed: " + e.message); });
+        if (!tx) return J({ ok:false, error:"tx_not_found" }, 404);
+
+        const pre = tx.meta?.preTokenBalances || [];
+        const post = tx.meta?.postTokenBalances || [];
+        const ownerOut = ownerDeltaUSDC(pre, post, wallet);
+        const destIn  = accountDeltaUSDC(pre, post, dest);
+
+        // Minimal >= 1.0 USDC (mit kleiner Toleranz)
+        const okAmt = (ownerOut + 1e-9) >= EARLY_FLAT_USDC && (destIn + 1e-9) >= EARLY_FLAT_USDC;
+        if (!okAmt) return J({ ok:false, error:"fee_underpaid", ownerOut, destIn, need: EARLY_FLAT_USDC }, 400);
+
+        // Claimable berechnen
+        const claim = await loadClaim(env, wallet);
+        const gross = Math.floor((claim.total_inpi || 0) - (claim.early?.net_claimed || 0));
+        if (gross <= 0) return J({ ok:false, error:"nothing_to_claim" }, 400);
+
+        // Job anlegen – hier KEIN INPI-Abzug; $1 Fee ist separat in USDC
+        const jobId = `ec:${Date.now()}:${Math.random().toString(36).slice(2,8)}`;
+        const job = {
+          kind: "EARLY_CLAIM",
+          job_id: jobId,
+          wallet,
+          gross_inpi: gross,
+          fee_inpi: 0,
+          net_inpi: gross,
+          fee_bps: 0,
+          fee_dest: "flat_usdc",
+          status: "queued",
+          ts: Date.now(),
+          fee_signature
+        };
+        await env.INPI_CLAIMS.put(`early_job:${jobId}`, JSON.stringify(job), { expirationTtl: 60*60*24*30 });
+        await env.INPI_CLAIMS.put(`early_state:${wallet}`, JSON.stringify({ pending_job_id: jobId, ts: Date.now() }), { expirationTtl: 60*60*24*7 });
+        await env.INPI_CLAIMS.put(usedKey, JSON.stringify({ job_id: jobId, wallet, ts: Date.now() }), { expirationTtl: 60*60*24*60 });
+
+        return J({ ok:true, queued:true, job_id: jobId, wallet, net_inpi: gross });
+      }
+
+      // ---- EARLY-CLAIM REQUEST (bps-Variante bleibt nutzbar)
       if (req.method === "POST" && p === "/api/token/claim/early/request") {
         if (!(await isJson(req))) return J({ ok:false, error:"bad_content_type" }, 415);
         const body = await req.json().catch(() => ({}));
         const wallet = String(body.wallet || "").trim();
-        const sig_b58 = String(body.sig_b58 || "").trim(); // optional
-        const msg_str = String(body.msg_str || "").trim(); // optional
+        const sig_b58 = String(body.sig_b58 || "").trim();
+        const msg_str = String(body.msg_str || "").trim();
 
         if (!isAddress(wallet)) return J({ ok:false, error:"bad_wallet" }, 400);
 
         const early = await getEarlyConfig(env);
         if (!early.enabled) return J({ ok:false, error:"early_disabled" }, 403);
 
-        // Minimales Rate-Limit (pro Wallet 1 offene Anfrage)
         const pendingKey = `early_state:${wallet}`;
         const prevStateTxt = await env.INPI_CLAIMS.get(pendingKey);
         if (prevStateTxt) {
@@ -238,13 +341,11 @@ export default {
         const fee = Math.floor((gross * early.fee_bps) / 10000);
         const net = Math.max(0, gross - fee);
 
-        // (Optional) Signaturverifikation – nur wenn mitgesendet; fehlertolerant
         if (sig_b58 && msg_str) {
           const ok = await verifySolanaSig(wallet, msg_str, sig_b58).catch(() => false);
           if (!ok) return J({ ok:false, error:"bad_sig" }, 400);
         }
 
-        // Job anlegen – wird von OPS/Cron ausgeführt (Transfer aus Presale/Reserve)
         const jobId = `ec:${Date.now()}:${Math.random().toString(36).slice(2,8)}`;
         const job = {
           kind: "EARLY_CLAIM",
@@ -261,15 +362,13 @@ export default {
           msg_str: msg_str || null
         };
 
-        // In Queue (KV)
         await env.INPI_CLAIMS.put(`early_job:${jobId}`, JSON.stringify(job), { expirationTtl: 60*60*24*30 });
         await env.INPI_CLAIMS.put(pendingKey, JSON.stringify({ pending_job_id: jobId, ts: Date.now() }), { expirationTtl: 60*60*24*7 });
 
         return J({ ok:true, queued:true, job_id: jobId, wallet, net_inpi: net, fee_inpi: fee, fee_bps: early.fee_bps, fee_dest: early.fee_dest });
       }
 
-      // ---- EARLY-CLAIM FINALIZE (admin; nach erfolgtem On-Chain-Transfer)
-      // Body: { wallet, job_id, tx_signature }
+      // ---- EARLY-CLAIM FINALIZE (admin)
       if (req.method === "POST" && p === "/api/token/claim/early/finalize") {
         if (!adminOk(req, env)) return J({ ok:false, error:"forbidden" }, 403);
         if (!(await isJson(req))) return J({ ok:false, error:"bad_content_type" }, 415);
@@ -290,7 +389,6 @@ export default {
         }
         if (job.wallet !== wallet) return J({ ok:false, error:"job_wallet_mismatch" }, 400);
 
-        // Claim-Struktur updaten (net + fee aufsummieren)
         const claim = await loadClaim(env, wallet);
         claim.early = claim.early || { net_claimed: 0, fee_inpi_sum: 0, jobs: [] };
         claim.early.net_claimed = Math.floor((claim.early.net_claimed || 0) + Math.max(0, job.net_inpi || 0));
@@ -305,13 +403,10 @@ export default {
         claim.updated_at = Date.now();
         await saveClaim(env, wallet, claim);
 
-        // Job markieren
         job.status = "done";
         job.tx_signature = tx_signature || null;
         job.ts_done = Date.now();
         await env.INPI_CLAIMS.put(`early_job:${job_id}`, JSON.stringify(job), { expirationTtl: 60*60*24*60 });
-
-        // Pending-State abschließen
         await env.INPI_CLAIMS.put(`early_state:${wallet}`, JSON.stringify({ last_done_ts: Date.now(), last_job_id: job_id }), { expirationTtl: 60*60*24*60 });
 
         return J({ ok:true, job_id, wallet, tx_signature, totals: {
@@ -319,62 +414,6 @@ export default {
           early_net_claimed: Math.floor(claim.early.net_claimed||0),
           pending_inpi: Math.max(0, Math.floor(claim.total_inpi||0) - Math.floor(claim.early.net_claimed||0))
         }});
-      }
-
-      // ---- ALLOCATIONS (public)
-      if (req.method === "GET" && p === "/api/token/allocations") {
-        const raw = await env.CONFIG.get("token:allocations", { type: "text" });
-        if (!raw) return J({ ok:false, error:"not_found" }, 404);
-        // als Text gespeichert -> unverändert zurückgeben (bereits JSON)
-        return new Response(raw, { status: 200, headers: { ...corsHeaders(), ...jsonMetaHeaders(), ...secHeaders(), "cache-control":"public, max-age=300" } });
-      }
-
-      // ---- ALLOCATIONS AUDIT (on-chain Vergleich, public)
-      if (req.method === "GET" && p === "/api/token/allocations/onchain") {
-        const raw = await env.CONFIG.get("token:allocations", { type: "text" });
-        if (!raw) return J({ ok:false, error:"not_found" }, 404);
-        let cfg; try { cfg = JSON.parse(raw); } catch { return J({ ok:false, error:"alloc_bad_json" }, 500); }
-        const rpc = await getPublicRpcUrl(env);
-
-        // On-chain Supply
-        const sup = await rpcCall(rpc, "getTokenSupply", [cfg.mint, { commitment:"confirmed" }]).catch(() => null);
-        const chainSupply = sup?.value ? {
-          amount: sup.value.amount,
-          decimals: sup.value.decimals,
-          uiAmount: Number(sup.value.amount) / (10 ** Number(sup.value.decimals || 0))
-        } : null;
-
-        // Für alle Einträge mit .ata den Kontostand holen
-        const rows = [];
-        let sumOnchain = 0;
-        for (const a of (cfg.allocations || [])) {
-          const ata = a.ata || null;
-          let on = null;
-          if (ata) {
-            const b = await rpcCall(rpc, "getTokenAccountBalance", [ata, { commitment:"confirmed" }]).catch(() => null);
-            if (b?.value) {
-              on = {
-                amount: b.value.amount,
-                decimals: b.value.decimals,
-                uiAmount: Number(b.value.amount) / (10 ** Number(b.value.decimals || 0))
-              };
-              sumOnchain += on.uiAmount;
-            }
-          }
-          rows.push({ label:a.label, owner:a.owner, ata, expected:a.amount ?? null, onchain:on });
-        }
-
-        const expectedSum = (cfg.allocations || []).reduce((s,x)=>s + Number(x.amount || 0), 0);
-        const okSum = (Math.floor(sumOnchain) === Number(expectedSum));
-
-        return J({
-          ok:true,
-          mint: cfg.mint,
-          supply: { expected_cfg: cfg.supply_total ?? null, chain: chainSupply },
-          totals: { expected_allocations: expectedSum, onchain_sum: sumOnchain, match_int: okSum },
-          allocations: rows,
-          updated_at: Date.now()
-        }, 200, { "cache-control":"no-store" });
       }
 
       // ---- 404 (JSON)
@@ -386,7 +425,7 @@ export default {
 };
 
 /* ---------------- Admin: Reconcile ---------------- */
-async function reconcileOne(req, env) {
+async function reconcileOne(req, env) { /* unverändert wie bei dir */ 
   if (!adminOk(req, env)) return J({ ok:false, error:"forbidden" }, 403);
   if (!(await isJson(req))) return J({ ok:false, error:"bad_content_type" }, 415);
 
@@ -415,7 +454,6 @@ async function reconcileOne(req, env) {
   const blockTime = tx.blockTime ? (tx.blockTime * 1000) : null;
   const slot = tx.slot;
 
-  // Delta
   const ownerDelta = ownerDeltaUSDC(pre, post, wallet);
   if (!(ownerDelta > 0)) return J({ ok:false, error:"no_owner_outflow" }, 400);
 
@@ -428,7 +466,6 @@ async function reconcileOne(req, env) {
 
   const usdc = ownerDelta;
 
-  // INPI berechnen
   let inpi;
   if (overrideInpi != null && overrideInpi > 0) {
     inpi = Math.floor(overrideInpi);
@@ -438,14 +475,12 @@ async function reconcileOne(req, env) {
     inpi = Math.floor(usdc / price);
   }
 
-  // Idempotenz
   const claim = await loadClaim(env, wallet);
   if (claim.txs.some(t => t.signature === signature)) {
     return J({ ok:true, already:true, wallet, signature, usdc, inpi,
       totals:{ total_usdc: claim.total_usdc, total_inpi: claim.total_inpi } });
   }
 
-  // Speichern (inkl. wallet-Feld als Selbst-Referenz)
   claim.total_usdc = round6((claim.total_usdc || 0) + usdc);
   claim.total_inpi = Math.floor((claim.total_inpi || 0) + inpi);
   claim.txs.push({ signature, usdc, inpi, slot, ts: blockTime || Date.now() });
@@ -466,7 +501,6 @@ function ownerDeltaUSDC(pre, post, owner) {
   const postBal = sumOwnerUSDC(post, owner);
   return round6(Math.max(0, preBal - postBal));
 }
-
 function accountDeltaUSDC(pre, post, account) {
   const p0 = findAccountUSDC(pre, account);
   const p1 = findAccountUSDC(post, account);
@@ -475,7 +509,6 @@ function accountDeltaUSDC(pre, post, account) {
   const a1 = p1?.uiAmount || 0;
   return round6(Math.max(0, a1 - a0));
 }
-
 function sumOwnerUSDC(arr, owner) {
   let s = 0;
   for (const b of arr || []) {
@@ -486,7 +519,6 @@ function sumOwnerUSDC(arr, owner) {
   }
   return round6(s);
 }
-
 function findAccountUSDC(arr, account) {
   for (const b of arr || []) {
     if (b.mint === USDC_MINT && b.account === account) {
@@ -507,7 +539,6 @@ async function loadClaim(env, wallet) {
     if (!Array.isArray(j.txs)) j.txs = [];
     j.total_usdc = Number(j.total_usdc || 0);
     j.total_inpi = Math.floor(j.total_inpi || 0);
-    // Early-Felder hart absichern
     if (!j.early || typeof j.early !== "object") j.early = { net_claimed: 0, fee_inpi_sum: 0, jobs: [] };
     if (!Array.isArray(j.early.jobs)) j.early.jobs = [];
     j.early.net_claimed = Math.floor(j.early.net_claimed || 0);
@@ -517,7 +548,6 @@ async function loadClaim(env, wallet) {
     return { total_usdc: 0, total_inpi: 0, txs: [], early: { net_claimed: 0, fee_inpi_sum: 0, jobs: [] } };
   }
 }
-
 async function saveClaim(env, wallet, claim) {
   const key = `claim:${wallet}`;
   await env.INPI_CLAIMS.put(key, JSON.stringify(claim));
@@ -527,7 +557,8 @@ async function saveClaim(env, wallet, claim) {
 async function readPublicConfig(env) {
   const keys = [
     "INPI_MINT","presale_state","tge_ts","presale_price_usdc","public_price_usdc",
-    "presale_deposit_usdc","cap_per_wallet_usdc","public_rpc_url"
+    "presale_deposit_usdc","cap_per_wallet_usdc","public_rpc_url",
+    "early_fee_usdc_ata" // NEU: optional separate USDC-ATA für $1-Fee
   ];
   const out = {};
   await Promise.all(keys.map(async (k) => (out[k] = await env.CONFIG.get(k))));
@@ -538,7 +569,6 @@ async function readPublicConfig(env) {
   } else out.tge_ts = null;
   return out;
 }
-
 async function getEarlyConfig(env) {
   const keys = ["early_claim_enabled","early_claim_fee_bps","early_claim_fee_dest","wait_bonus_bps"];
   const vals = {};
@@ -547,17 +577,15 @@ async function getEarlyConfig(env) {
     enabled: String(vals.early_claim_enabled || "false").toLowerCase() === "true",
     fee_bps: Math.max(0, Number(vals.early_claim_fee_bps || 0) || 0),
     fee_dest: String(vals.early_claim_fee_dest || "lp"),
-    bonus_bps: Math.max(0, Number(vals.wait_bonus_bps || 300) || 0) // Default 3%
+    bonus_bps: Math.max(0, Number(vals.wait_bonus_bps || 300) || 0)
   };
 }
-
 async function getPublicRpcUrl(env) {
   try { const fromCfg = await env.CONFIG.get("public_rpc_url"); if (fromCfg) return fromCfg; } catch {}
   if (env.RPC_URL) return env.RPC_URL;
   if (env.HELIUS_API_KEY) return `https://rpc.helius.xyz/?api-key=${env.HELIUS_API_KEY}`;
   return "https://api.mainnet-beta.solana.com";
 }
-
 async function rpcCall(rpcUrl, method, params) {
   const body = { jsonrpc: "2.0", id: 1, method, params };
   const r = await fetch(rpcUrl, {
@@ -572,7 +600,6 @@ async function rpcCall(rpcUrl, method, params) {
   if (!("result" in j)) throw new Error("rpc_no_result");
   return j.result;
 }
-
 async function getSplBalance(rpcUrl, owner, mint) {
   const res = await rpcCall(rpcUrl, "getTokenAccountsByOwner",
     [owner, { mint }, { encoding:"jsonParsed", commitment:"confirmed" }]);
@@ -588,7 +615,6 @@ async function getSplBalance(rpcUrl, owner, mint) {
   const ui = Number(raw) / Number(den || 1n);
   return { amount: raw.toString(), decimals, uiAmount: ui, uiAmountString: String(ui) };
 }
-
 async function passesNftGate(env, owner, gateMint) {
   try {
     const rpc = await getPublicRpcUrl(env);
@@ -601,7 +627,6 @@ async function passesNftGate(env, owner, gateMint) {
     return false;
   } catch { return true; }
 }
-
 function makeSolanaPayUrl({ to, amount, splToken, label, message }) {
   const u = new URL(`solana:${to}`);
   if (amount != null) u.searchParams.set("amount", String(amount));
@@ -610,12 +635,10 @@ function makeSolanaPayUrl({ to, amount, splToken, label, message }) {
   if (message)  u.searchParams.set("message", message);
   return u.toString();
 }
-
 function isAddress(s){ return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(s || "")); }
 function toNumOrNull(x){ if (x==null || x==="") return null; const n = Number(x); return Number.isFinite(n)? n : null; }
 async function isJson(req){ return (req.headers.get("content-type")||"").toLowerCase().includes("application/json"); }
 function adminOk(req, env){ return (req.headers.get("x-admin-key") || "") === String(env.RECONCILE_KEY || ""); }
-
 function corsHeaders() {
   return {
     "access-control-allow-origin": "*",
@@ -627,7 +650,6 @@ function corsHeaders() {
 function jsonMetaHeaders(){
   return { "content-type":"application/json; charset=utf-8" };
 }
-
 function J(obj, status=200, extra={}) {
   return new Response(JSON.stringify(obj), {
     status,
@@ -643,9 +665,6 @@ function secHeaders(){
     "x-proxy": "api-token"
   };
 }
-function secTextHeaders(){
-  return { "content-type":"text/plain; charset=utf-8", "cache-control":"no-store", ...secHeaders(), ...corsHeaders() };
-}
 function round6(x){ return Math.round(Number(x||0)*1e6)/1e6; }
 function numFrom(amountStr, decimals){
   const a = BigInt(amountStr || "0");
@@ -654,31 +673,24 @@ function numFrom(amountStr, decimals){
   return Number(a) / Number(den);
 }
 
-/* ---------- Solana Signatur-Verify (optional) ---------- */
-/* Versucht Ed25519 mit WebCrypto. Fällt bei Inkompatibilität still auf false zurück. */
+/* ---------- Solana Signatur-Verify ---------- */
 async function verifySolanaSig(pubkeyBase58, message, sigBase58){
   try{
     const pub = b58decode(pubkeyBase58);
     const sig = b58decode(sigBase58);
-    const key = await crypto.subtle.importKey(
-      "raw", pub, { name: "Ed25519" }, false, ["verify"]
-    );
+    const key = await crypto.subtle.importKey("raw", pub, { name: "Ed25519" }, false, ["verify"]);
     const ok = await crypto.subtle.verify("Ed25519", key, sig, new TextEncoder().encode(message));
     return !!ok;
   }catch{
-    // (Manche Worker-Runtimes nutzen NODE-ED25519)
     try{
       const pub = b58decode(pubkeyBase58);
       const sig = b58decode(sigBase58);
-      const key = await crypto.subtle.importKey(
-        "raw", pub, { name: "NODE-ED25519" }, false, ["verify"]
-      );
+      const key = await crypto.subtle.importKey("raw", pub, { name: "NODE-ED25519" }, false, ["verify"]);
       const ok = await crypto.subtle.verify("NODE-ED25519", key, sig, new TextEncoder().encode(message));
       return !!ok;
     }catch{ return false; }
   }
 }
-
 /* ---------- Base58 minimal ---------- */
 const B58_ALPH = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 const B58_MAP = Object.fromEntries(B58_ALPH.split("").map((c,i)=>[c,i]));
@@ -689,14 +701,12 @@ function b58decode(s){
     if (v == null) throw new Error("bad_b58");
     n = n * 58n + BigInt(v);
   }
-  // to bytes
   let bytes = [];
   while (n > 0n){
     bytes.push(Number(n % 256n));
     n = n / 256n;
   }
   bytes = bytes.reverse();
-  // handle leading zeros
   for (const ch of s) {
     if (ch === "1") bytes.unshift(0);
     else break;
