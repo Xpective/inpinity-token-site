@@ -9,7 +9,7 @@
   <!-- Security / Perf -->
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self';
-                 connect-src 'self' https://inpinity.online https://rpc.helius.xyz wss://rpc.helius.xyz https://api.mainnet-beta.solana.com;
+                 connect-src 'self' https://inpinity.online;
                  img-src 'self' data: https://api.qrserver.com;
                  script-src 'self' https://cdn.jsdelivr.net;
                  style-src 'self' 'unsafe-inline';
@@ -17,7 +17,6 @@
   <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin">
   <link rel="preconnect" href="https://inpinity.online" />
   <link rel="stylesheet" href="./styles.css" />
-  <link rel="icon" href="./inpi.png" />
 </head>
 <body>
   <header class="bar">
@@ -36,10 +35,7 @@
       <div class="stats">
         <div><b>Presale-Phase:</b> <span id="presaleState">—</span></div>
         <div><b>TGE in:</b> <span id="tgeTime">tbd</span></div>
-        <div>
-          <b>Preis:</b> <span id="p0">—</span>
-          <span id="gateBadge" class="badge" style="margin-left:.5rem"></span>
-        </div>
+        <div><b>Preis (Presale, live/fallback):</b> <span id="p0">—</span></div>
       </div>
     </section>
 
@@ -67,7 +63,7 @@
     <section>
       <h2>Presale Intent</h2>
       <label>USDC Betrag
-        <input id="inpAmount" type="number" inputmode="decimal" min="1" step="0.01" value="10" />
+        <input id="inpAmount" type="number" min="1" step="0.01" value="10" />
       </label>
       <div><small>Erwartete Zuteilung: <b id="expectedInpi">–</b></small></div>
       <div style="margin-top:.6rem;display:flex;gap:.6rem;flex-wrap:wrap">
@@ -98,7 +94,7 @@
     <!-- Markets / NFTs -->
     <section class="card">
       <h2>Handel & NFTs</h2>
-      <p>Offizielle Marktplatz-Links & Gallerie:</p>
+      <p>Offizielle Marktplatz-Links:</p>
       <p class="row">
         <a class="secondary" target="_blank" rel="noopener" href="https://magiceden.io/marketplace/inpi">
           <button class="secondary">Magic Eden – INPI</button>
@@ -106,8 +102,9 @@
         <a class="secondary" target="_blank" rel="noopener" href="https://www.tensor.trade/trade/inpi">
           <button class="secondary">Tensor – INPI</button>
         </a>
+        <!-- NEU: NFT Gallery Button -->
         <a class="secondary" href="/pillary/app">
-          <button class="secondary">NFT-Gallery</button>
+          <button class="btn-accent">NFT&nbsp;Gallery</button>
         </a>
       </p>
     </section>
