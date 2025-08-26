@@ -14,7 +14,7 @@ kv_namespaces = [
 
 [vars]
 # Gate NICHT hier setzen, wenn du es im Admin pflegst:
-# GATE_COLLECTION = ""
+# GATE_COLLECTION = "6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ"
 # GATE_MINT       = ""
 
 # Input-Grenzen
