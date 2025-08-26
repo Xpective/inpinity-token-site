@@ -14,7 +14,7 @@ kv_namespaces = [
 
 [vars]
 # dein bestehender RPC-Proxy:
-RPC_URL = "https://inpinity.online/rpc"
+RPC_URL = "https://api.mainnet-beta.solana.com"
 
 # optionales Gate: nur wer dieses NFT (SPL Mint) hält, darf Presale
 # leer lassen, wenn du (noch) nicht gatest
