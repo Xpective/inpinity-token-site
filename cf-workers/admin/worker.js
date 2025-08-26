@@ -124,7 +124,7 @@ export default {
       return pass(r);
     }
 
-    // NEU: Early-Claims in OPS anstoßen
+    // Early-Claims in OPS anstoßen
     if (req.method === "POST" && p === "/admin/cron/early-claims") {
       if (!(await requireJson(req))) return badCT();
       const body = await req.json().catch(() => ({}));
@@ -164,10 +164,23 @@ function needsOtp(path) {
 }
 
 /* --------------------- Config Keys --------------------- */
+const DEFAULT_KEYS = [
+  // Preise/Phasen/Wallets
+  "INPI_MINT","presale_state","tge_ts","presale_price_usdc","public_price_usdc",
+  "presale_deposit_usdc","cap_per_wallet_usdc","public_rpc_url",
+  // Gate (als KV, zusätzlich zu ENV)
+  "gate_collection","gate_mint",
+  // Early-Claim
+  "early_claim_enabled","early_claim_fee_bps","early_claim_fee_dest","wait_bonus_bps",
+  "early_fee_usdc_ata",
+  // (weitere Projekt-Keys – Platzhalter; wenn du willst, nimm die aus deinem TOML)
+  "supply_total","project_uri","whitepaper_sha256"
+];
+
 function getConfigKeys(env) {
   const csv = (env.CONFIG_KEYS || "").trim();
-  if (csv) return csv.split(",").map((s) => s.trim()).filter(Boolean);
-  return [];
+  if (!csv) return DEFAULT_KEYS;
+  return csv.split(",").map((s) => s.trim()).filter(Boolean);
 }
 function keyAllowed(env, k) {
   return getConfigKeys(env).includes(String(k));
@@ -188,7 +201,6 @@ async function proxyCron(env, subpath, method = "GET", bodyObj) {
   const url = `${base}${subpath}`;
   const headers = { authorization: `Bearer ${env.OPS_API_KEY}` };
   let body = null;
-
   if (method !== "GET" && bodyObj != null) {
     body = JSON.stringify(bodyObj);
     headers["content-type"] = "application/json";
@@ -286,12 +298,102 @@ async function hmac(secret, msg, algo = "SHA-256") {
   return crypto.subtle.sign("HMAC", key, enc.encode(msg));
 }
 
-/* --------------------- UI (Dashboard + Konfigurator 2.0) --------------------- */
+/* --------------------- Mini-UI --------------------- */
 function ui(env) {
-  // WICHTIG: Im <script> KEINE Backticks/Interpolation benutzen (nur String-Concats).
-  const html = `<!doctype html>
+  const html =
+`<!doctype html>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>INPI Admin</title>
 <style>
 :root{ color-scheme: light dark; font-family: system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell; }
-body{ margin:0; background:#0b0d10; color
+body{ margin:0; background:#0b0d10; color:#e8eef6 }
+header{ display:flex; gap:1rem; align-items:center; padding:12px 16px; background:#0f1318; border-bottom:1px solid #233; }
+main{ padding:16px; max-width:1100px; margin:0 auto; }
+.card{ border:1px solid #233; border-radius:10px; padding:12px; background:#0f1318; margin:12px 0; }
+input,select,button,textarea{ font:inherit; padding:.5rem; border-radius:8px; border:1px solid #345; background:#0b0f14; color:#e8eef6; }
+button{ background:#1e6ad1; border:none; cursor:pointer; }
+button.secondary{ background:#263446; }
+code,kbd{ background:#0b0f14; padding:2px 6px; border-radius:6px; border:1px solid #223; }
+small.mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; }
+.grid{ display:grid; grid-template-columns: 220px 1fr; gap:.6rem .8rem; align-items:center; }
+.muted{ color:#a9b3be }
+hr{ border:0; border-top:1px solid #233; margin:12px 0; }
+</style>
+<header><h1>INPI Admin</h1><span class="muted" style="margin-left:auto">OTP-geschützt</span></header>
+<main>
+  <section class="card">
+    <h2>Config bearbeiten</h2>
+    <div class="grid">
+      <label>Key</label>
+      <div>
+        <select id="key"></select>
+        <small class="muted">z.B. <code>gate_collection</code>, <code>gate_mint</code>, <code>early_fee_usdc_ata</code></small>
+      </div>
+      <label>Value</label>
+      <textarea id="val" rows="2" placeholder="Wert (String)"></textarea>
+      <div></div>
+      <div style="display:flex; gap:.5rem">
+        <button id="btnSet">Set</button>
+        <button id="btnDel" class="secondary">Delete</button>
+      </div>
+    </div>
+    <p class="muted" style="margin-top:.6rem">
+      Hinweis: Für dein NFT-Gate ist <b>gate_collection</b> = <code>6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ</code> korrekt.
+      <br/>Der Key <code>gate_collection_mint</code> ist <b>nicht</b> erlaubt.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Export / Import</h2>
+    <div style="display:flex; gap:.5rem; flex-wrap:wrap">
+      <button id="btnExport">Export JSON</button>
+      <input type="file" id="file" accept="application/json"/>
+      <button id="btnImport" class="secondary">Import</button>
+    </div>
+    <p class="muted">Es werden nur erlaubte Keys geschrieben (Whitelist).</p>
+  </section>
+
+  <section class="card">
+    <h2>Aktuelle Werte</h2>
+    <pre id="dump" class="small"></pre>
+  </section>
+</main>
+<script>
+async function j(url, opt){ const r = await fetch(url, opt); const t = await r.text(); try { return { ok:r.ok, j: JSON.parse(t) }; } catch { return { ok:r.ok, j:{}, raw:t }; } }
+async function loadKeys(){
+  const { j } = await j('/admin/config/keys');
+  const sel = document.getElementById('key');
+  sel.innerHTML='';
+  (j.keys||[]).forEach(k=>{ const o=document.createElement('option'); o.value=k; o.textContent=k; sel.appendChild(o); });
+}
+async function loadDump(){
+  const { j } = await j('/admin/config');
+  const dump = document.getElementById('dump');
+  dump.textContent = JSON.stringify(j.values||{}, null, 2);
+}
+document.getElementById('btnSet').onclick = async()=>{
+  const key = document.getElementById('key').value;
+  const value = document.getElementById('val').value;
+  const { ok, j:res } = await j('/admin/config/set', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ key, value }) });
+  alert(JSON.stringify(res));
+  loadDump();
+};
+document.getElementById('btnDel').onclick = async()=>{
+  const key = document.getElementById('key').value;
+  const { ok, j:res } = await j('/admin/config/delete', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ key }) });
+  alert(JSON.stringify(res));
+  loadDump();
+};
+document.getElementById('btnExport').onclick = async()=>{
+  const r = await fetch('/admin/config/export');
+  const b = await r.blob(); const a=document.createElement('a'); a.href= URL.createObjectURL(b); a.download='inpi-config-export.json'; a.click();
+};
+document.getElementById('btnImport').onclick = async()=>{
+  const f = document.getElementById('file').files[0]; if(!f) return alert('JSON wählen');
+  const txt = await f.text(); const { ok, j:res } = await j('/admin/config/import', { method:'POST', headers:{'content-type':'application/json'}, body: txt });
+  alert(JSON.stringify(res)); loadDump();
+};
+loadKeys().then(loadDump);
+</script>`;
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", ...secHeaders() }});
+}
