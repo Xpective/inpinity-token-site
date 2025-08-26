@@ -4,7 +4,8 @@
 // Secrets (optional): HELIUS_API_KEY, RECONCILE_KEY
 // Neue Config-Keys (über Admin-Worker setzbar):
 //   early_claim_enabled ("true"/"false"), early_claim_fee_bps, early_claim_fee_dest ("lp"|"treasury"),
-//   wait_bonus_bps, early_fee_usdc_ata  <-- NEU: separates USDC-ATA für $1 Fee
+//   wait_bonus_bps, early_fee_usdc_ata
+//   ZUSATZ (für Preis-Tiers): tier_nft_price_usdc, tier_public_price_usdc, public_mint_price_usdc
 
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC4wEGGkZwyTDt1v";
 const QR_SVC = "https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=";
@@ -33,9 +34,16 @@ export default {
         const early = await getEarlyConfig(env);
         const feeDest = cfg.early_fee_usdc_ata || cfg.presale_deposit_usdc || "";
 
-        // für Frontend: mit/ohne NFT Preise (serverseitig befüllbar; fallback auf presale/public)
-        const price_with = toNumOrNull(cfg.presale_price_usdc);
-        const price_without = toNumOrNull(cfg.public_price_usdc);
+        // Preis-Tiers: bevorzugt tier_* Keys; Fallbacks auf public/presale
+        const priceWith =
+          toNumOrNull(cfg.tier_nft_price_usdc) ??
+          toNumOrNull(cfg.public_mint_price_usdc) ??
+          toNumOrNull(cfg.presale_price_usdc);
+
+        const priceWithout =
+          toNumOrNull(cfg.tier_public_price_usdc) ??
+          toNumOrNull(cfg.public_price_usdc) ??
+          null; // absichtlich kein "automatisches *10"
 
         return J({
           rpc_url,
@@ -43,11 +51,15 @@ export default {
           inpi_mint: cfg.INPI_MINT || "",
           presale_state: cfg.presale_state || "pre",
           tge_ts: cfg.tge_ts,
-          // alt + neu
+
+          // klassische Felder
           presale_price_usdc: toNumOrNull(cfg.presale_price_usdc),
           public_price_usdc:  toNumOrNull(cfg.public_price_usdc),
-          price_with_nft_usdc:  price_with,
-          price_without_nft_usdc: price_without,
+
+          // neue Tier-Preise (Frontend nutzt das für "mit/ohne NFT")
+          price_with_nft_usdc:  priceWith,
+          price_without_nft_usdc: priceWithout,
+
           deposit_usdc_ata:   cfg.presale_deposit_usdc || "",
           cap_per_wallet_usdc: toNumOrNull(cfg.cap_per_wallet_usdc),
           presale_min_usdc: toNumOrNull(env.PRESALE_MIN_USDC),
@@ -95,7 +107,7 @@ export default {
           cfg.INPI_MINT ? getSplBalance(rpc, wallet, cfg.INPI_MINT) : Promise.resolve(null)
         ]);
 
-        // Gate prüfen: Collection > Mint
+        // Gate prüfen: zuerst Collection (DAS), sonst Mint
         let gate_ok = true;
         const gateCollection = String(env.GATE_COLLECTION || "").trim();
         const gateMint = String(env.GATE_MINT || "").trim();
@@ -157,7 +169,7 @@ export default {
         const solflare = `https://solflare.com/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
         const qr_url = `${QR_SVC}${encodeURIComponent(sp)}`;
 
-        // Erwartete Zuteilung (nur Info)
+        // Erwartete Zuteilung (nur Info – presale_price_usdc)
         const price = toNumOrNull(cfg.presale_price_usdc);
         const expected_inpi = price ? Math.floor(amount / price) : null;
 
@@ -282,7 +294,7 @@ export default {
         if (!tx) return J({ ok:false, error:"tx_not_found" }, 404);
 
         const pre = tx.meta?.preTokenBalances || [];
-               const post = tx.meta?.postTokenBalances || [];
+        const post = tx.meta?.postTokenBalances || [];
         const ownerOut = ownerDeltaUSDC(pre, post, wallet);
         const destIn  = accountDeltaUSDC(pre, post, dest);
 
@@ -517,10 +529,10 @@ async function passesMintGate(env, owner, gateMint) {
 }
 
 // Collection-Gate via Helius DAS (compressed & uncompressed)
+// Voraussetzung: getPublicRpcUrl() liefert Helius DAS RPC (z.B. https://rpc.helius.xyz/?api-key=...)
 async function passesCollectionGate(env, owner, collection) {
   try {
     const rpc = await getPublicRpcUrl(env);
-    // Helius DAS: getAssetsByOwner (zeigt grouping -> collection)
     const body = {
       jsonrpc: "2.0", id: 1, method: "getAssetsByOwner",
       params: {
@@ -610,7 +622,11 @@ async function readPublicConfig(env) {
   const keys = [
     "INPI_MINT","presale_state","tge_ts","presale_price_usdc","public_price_usdc",
     "presale_deposit_usdc","cap_per_wallet_usdc","public_rpc_url",
-    "early_fee_usdc_ata"
+    "early_fee_usdc_ata",
+    // Preis-Tiers & Mint
+    "tier_nft_price_usdc","tier_public_price_usdc","public_mint_price_usdc",
+    // Gate Keys (optional, nur lesend für Status/Debug)
+    "gate_collection","gate_mint"
   ];
   const out = {};
   await Promise.all(keys.map(async (k) => (out[k] = await env.CONFIG.get(k))));
@@ -635,7 +651,7 @@ async function getEarlyConfig(env) {
 async function getPublicRpcUrl(env) {
   try { const fromCfg = await env.CONFIG.get("public_rpc_url"); if (fromCfg) return fromCfg; } catch {}
   if (env.RPC_URL) return env.RPC_URL;
-  if (env.HELIUS_API_KEY) return `https://rpc.helius.xyz/?api-key=${env.HELIUS_API_KEY}`;
+  if (env.HELIUS_API_KEY) return `https://rpc.helius.xyz/?api-key=${env.HELIUS_API_KEY}`; // Helius DAS kompatibel
   return "https://api.mainnet-beta.solana.com";
 }
 async function rpcCall(rpcUrl, method, params) {
