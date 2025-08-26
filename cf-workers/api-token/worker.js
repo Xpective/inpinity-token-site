@@ -26,7 +26,7 @@ export default {
           usdc_mint: USDC_MINT,
           inpi_mint: cfg.INPI_MINT || "",
           presale_state: cfg.presale_state || "pre",
-          tge_ts: cfg.tge_ts, // Sekunden
+          tge_ts: cfg.tge_ts,
           presale_price_usdc: toNumOrNull(cfg.presale_price_usdc),
           public_price_usdc:  toNumOrNull(cfg.public_price_usdc),
           deposit_usdc_ata:   cfg.presale_deposit_usdc || "",
@@ -48,16 +48,9 @@ export default {
         const v = r?.value;
         if (!v) return J({ ok:false, error:"rpc_no_value" }, 502);
 
-        return J({
-          ok: true,
-          address: depo,
-          mint: USDC_MINT,
-          amount: v.amount,                 // string (Basis-Einheiten)
-          ui_amount: v.uiAmount,            // number
-          ui_amount_string: v.uiAmountString, // string
-          decimals: v.decimals,
-          updated_at: Date.now()
-        });
+        return J({ ok:true, address:depo, mint:USDC_MINT,
+          amount:v.amount, ui_amount:v.uiAmount, ui_amount_string:v.uiAmountString,
+          decimals:v.decimals, updated_at:Date.now() });
       }
 
       // ---- WALLET BALANCES (public)
@@ -73,19 +66,12 @@ export default {
           cfg.INPI_MINT ? getSplBalance(rpc, wallet, cfg.INPI_MINT) : Promise.resolve(null)
         ]);
 
-        return J({
-          ok: true,
-          wallet,
-          usdc,   // { amount, decimals, uiAmount, uiAmountString }
-          inpi,   // ggf. null, wenn INPI_MINT nicht gesetzt
-          updated_at: Date.now()
-        });
+        return J({ ok:true, wallet, usdc, inpi, updated_at:Date.now() });
       }
 
-      // ---- PRESALE INTENT (public; validiert)
+      // ---- PRESALE INTENT (public)
       if (req.method === "POST" && p === "/api/token/presale/intent") {
         if (!(await isJson(req))) return J({ ok:false, error:"bad_content_type" }, 415);
-        const url = new URL(req.url);
         const body   = await req.json().catch(() => ({}));
         const wallet = String(body.wallet || "").trim();
         const amount = Number(body.amount_usdc || 0);
@@ -102,14 +88,10 @@ export default {
 
         const cfg = await readPublicConfig(env);
         const state = String(cfg.presale_state || "pre");
-        if (state !== "pre" && state !== "public") {
-          return J({ ok:false, error:"phase_closed", phase: state }, 403);
-        }
+        if (state !== "pre" && state !== "public") return J({ ok:false, error:"phase_closed", phase: state }, 403);
 
         const cap = toNumOrNull(cfg.cap_per_wallet_usdc);
-        if (cap != null && amount > cap) {
-          return J({ ok:false, error:"over_cap", cap_per_wallet_usdc: cap }, 400);
-        }
+        if (cap != null && amount > cap) return J({ ok:false, error:"over_cap", cap_per_wallet_usdc: cap }, 400);
 
         const depo = cfg.presale_deposit_usdc || "";
         if (!isAddress(depo)) return J({ ok:false, error:"deposit_not_ready" }, 503);
@@ -119,52 +101,20 @@ export default {
           return J({ ok:false, error:"gate_denied" }, 403);
         }
 
-        // speichern (30 Tage TTL)
+        // Intent speichern (30 Tage TTL)
         const key = `intent:${Date.now()}:${wallet}`;
-        await env.PRESALE.put(key, JSON.stringify({
-          wallet, amount_usdc: amount, sig_b58, msg_str, ts: Date.now()
-        }), { expirationTtl: 60*60*24*30 });
+        await env.PRESALE.put(key, JSON.stringify({ wallet, amount_usdc:amount, sig_b58, msg_str, ts:Date.now() }),
+                              { expirationTtl: 60*60*24*30 });
 
-        // Solana Pay Link + Wallet-Deep-Links + QR
-        const sp = makeSolanaPayUrl({
-          to: depo,
-          amount,
-          splToken: USDC_MINT,
-          label: "Inpinity Presale",
-          message: "INPI Presale Contribution",
-        });
+        // Solana Pay + QR
+        const sp = makeSolanaPayUrl({ to: depo, amount, splToken: USDC_MINT, label: "Inpinity Presale", message: "INPI Presale Contribution" });
         const phantom = `https://phantom.app/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
         const solflare = `https://solflare.com/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
         const qr_url = `${QR_SVC}${encodeURIComponent(sp)}`;
 
-        if (wantsJson(req, url)) {
-          return J({
-            ok: true,
-            wallet,
-            amount_usdc: amount,
-            deposit_usdc_ata: depo,
-            usdc_mint: USDC_MINT,
-            solana_pay_url: sp,
-            phantom_universal_url: phantom,
-            solflare_universal_url: solflare,
-            qr_url,
-            label: "Inpinity Presale",
-            message: "INPI Presale Contribution",
-            updated_at: Date.now()
-          });
-        }
-
-        // Fallback: Textantwort
-        const text =
-`✅ Intent registriert.
-Bitte sende ${amount} USDC an:
-${depo}
-
-Oder 1-Klick mit Solana-Pay:
-${sp}
-
-Sobald die Zahlung erkannt ist, wird deine Zuteilung im System vermerkt. Claim ab TGE möglich.`;
-        return new Response(text, { status: 200, headers: secTextHeaders() });
+        return J({ ok:true, wallet, amount_usdc:amount, deposit_usdc_ata:depo, usdc_mint:USDC_MINT,
+          solana_pay_url:sp, phantom_universal_url:phantom, solflare_universal_url:solflare,
+          qr_url, label:"Inpinity Presale", message:"INPI Presale Contribution", updated_at:Date.now() });
       }
 
       // ---- PRESALE RECONCILE (admin)
@@ -219,15 +169,13 @@ async function reconcileOne(req, env) {
   const blockTime = tx.blockTime ? (tx.blockTime * 1000) : null;
   const slot = tx.slot;
 
-  // Delta für Owner (Wallet) in USDC
+  // Delta
   const ownerDelta = ownerDeltaUSDC(pre, post, wallet);
   if (!(ownerDelta > 0)) return J({ ok:false, error:"no_owner_outflow" }, 400);
 
-  // Delta für Deposit-ATA (muss ≈ ownerDelta sein)
   const depoDelta = accountDeltaUSDC(pre, post, depo);
   if (!(depoDelta > 0)) return J({ ok:false, error:"no_deposit_inflow" }, 400);
 
-  // Toleranz (Rundungen)
   if (Math.abs(depoDelta - ownerDelta) > 0.000001) {
     return J({ ok:false, error:"mismatch_amounts", ownerDelta, depoDelta }, 400);
   }
@@ -244,35 +192,24 @@ async function reconcileOne(req, env) {
     inpi = Math.floor(usdc / price);
   }
 
-  // Idempotenz: Wenn diese Signatur schon verbucht wurde, nichts doppelt zählen
+  // Idempotenz
   const claim = await loadClaim(env, wallet);
   if (claim.txs.some(t => t.signature === signature)) {
-    return J({ ok:true, already:true, wallet, signature, usdc, inpi, totals: {
-      total_usdc: claim.total_usdc, total_inpi: claim.total_inpi
-    }});
+    return J({ ok:true, already:true, wallet, signature, usdc, inpi,
+      totals:{ total_usdc: claim.total_usdc, total_inpi: claim.total_inpi } });
   }
 
   // Speichern
-  claim.total_usdc = round6(claim.total_usdc + usdc);
+  claim.total_usdc = round6((claim.total_usdc || 0) + usdc);
   claim.total_inpi = Math.floor((claim.total_inpi || 0) + inpi);
-  claim.txs.push({
-    signature,
-    usdc,
-    inpi,
-    slot,
-    ts: blockTime || Date.now()
-  });
+  claim.txs.push({ signature, usdc, inpi, slot, ts: blockTime || Date.now() });
   claim.updated_at = Date.now();
 
   await saveClaim(env, wallet, claim);
 
   return J({
-    ok: true,
-    wallet,
-    signature,
-    usdc,
-    inpi,
-    totals: { total_usdc: claim.total_usdc, total_inpi: claim.total_inpi },
+    ok:true, wallet, signature, usdc, inpi,
+    totals:{ total_usdc: claim.total_usdc, total_inpi: claim.total_inpi },
     updated_at: claim.updated_at
   });
 }
@@ -280,9 +217,7 @@ async function reconcileOne(req, env) {
 function ownerDeltaUSDC(pre, post, owner) {
   const preBal = sumOwnerUSDC(pre, owner);
   const postBal = sumOwnerUSDC(post, owner);
-  // Outflow vom Owner (positiv wenn Owner weniger hat)
-  const d = round6(Math.max(0, preBal - postBal));
-  return d;
+  return round6(Math.max(0, preBal - postBal));
 }
 
 function accountDeltaUSDC(pre, post, account) {
@@ -336,46 +271,29 @@ async function saveClaim(env, wallet, claim) {
   await env.INPI_CLAIMS.put(key, JSON.stringify(claim));
 }
 
-/* ---------------- Helpers (bestehend + neu) ---------------- */
+/* ---------------- Helpers ---------------- */
 async function readPublicConfig(env) {
   const keys = [
-    "INPI_MINT",
-    "presale_state",
-    "tge_ts",
-    "presale_price_usdc",
-    "public_price_usdc",
-    "presale_deposit_usdc",
-    "cap_per_wallet_usdc",
-    "public_rpc_url"
+    "INPI_MINT","presale_state","tge_ts","presale_price_usdc","public_price_usdc",
+    "presale_deposit_usdc","cap_per_wallet_usdc","public_rpc_url"
   ];
   const out = {};
   await Promise.all(keys.map(async (k) => (out[k] = await env.CONFIG.get(k))));
-
-  // tge_ts → Sekunden normalisieren
   if (out.tge_ts != null) {
     let t = Number(out.tge_ts);
-    if (Number.isFinite(t)) {
-      if (t > 1e12) t = Math.floor(t / 1000);
-      if (t <= 0) t = null;
-      out.tge_ts = t;
-    } else out.tge_ts = null;
+    if (Number.isFinite(t)) { if (t > 1e12) t = Math.floor(t/1000); if (t <= 0) t = null; out.tge_ts = t; }
+    else out.tge_ts = null;
   } else out.tge_ts = null;
-
   return out;
 }
 
-// EINZIGE Quelle der Wahrheit für RPC-URL (CONFIG > VAR > SECRET > Default)
 async function getPublicRpcUrl(env) {
-  try {
-    const fromCfg = await env.CONFIG.get("public_rpc_url");   // remote KV override
-    if (fromCfg) return fromCfg;
-  } catch {}
-  if (env.RPC_URL) return env.RPC_URL;                        // [vars] optional
-  if (env.HELIUS_API_KEY) return `https://rpc.helius.xyz/?api-key=${env.HELIUS_API_KEY}`; // secret fallback
-  return "https://api.mainnet-beta.solana.com";               // letzter Fallback
+  try { const fromCfg = await env.CONFIG.get("public_rpc_url"); if (fromCfg) return fromCfg; } catch {}
+  if (env.RPC_URL) return env.RPC_URL;
+  if (env.HELIUS_API_KEY) return `https://rpc.helius.xyz/?api-key=${env.HELIUS_API_KEY}`;
+  return "https://api.mainnet-beta.solana.com";
 }
 
-// Robustes JSON-RPC
 async function rpcCall(rpcUrl, method, params) {
   const body = { jsonrpc: "2.0", id: 1, method, params };
   const r = await fetch(rpcUrl, {
@@ -383,33 +301,21 @@ async function rpcCall(rpcUrl, method, params) {
     headers: { "content-type":"application/json", "accept":"application/json" },
     body: JSON.stringify(body)
   });
-
   const txt = await r.text();
-
-  if (!r.ok) {
-    const head = txt.trim().slice(0, 160);
-    throw new Error(`rpc_http_${r.status}: ${head}`);
-  }
-
-  let j;
-  try { j = JSON.parse(txt); }
-  catch (e) { throw new Error(`rpc_bad_json: ${txt.trim().slice(0,160)}`); }
-
+  if (!r.ok) throw new Error(`rpc_http_${r.status}: ${txt.trim().slice(0,160)}`);
+  let j; try { j = JSON.parse(txt); } catch { throw new Error(`rpc_bad_json: ${txt.trim().slice(0,160)}`); }
   if (j.error) throw new Error(j.error?.message || "rpc_error");
   if (!("result" in j)) throw new Error("rpc_no_result");
   return j.result;
 }
 
 async function getSplBalance(rpcUrl, owner, mint) {
-  const res = await rpcCall(rpcUrl, "getTokenAccountsByOwner", [
-    owner, { mint }, { encoding: "jsonParsed", commitment: "confirmed" }
-  ]);
-
+  const res = await rpcCall(rpcUrl, "getTokenAccountsByOwner",
+    [owner, { mint }, { encoding:"jsonParsed", commitment:"confirmed" }]);
   const arr = res?.value || [];
   let raw = 0n, decimals = 0;
   for (const it of arr) {
-    const info = it?.account?.data?.parsed?.info;
-    const ta = info?.tokenAmount;
+    const ta = it?.account?.data?.parsed?.info?.tokenAmount;
     if (!ta) continue;
     decimals = Number(ta?.decimals ?? decimals ?? 0);
     raw += BigInt(ta?.amount || "0");
@@ -419,21 +325,17 @@ async function getSplBalance(rpcUrl, owner, mint) {
   return { amount: raw.toString(), decimals, uiAmount: ui, uiAmountString: String(ui) };
 }
 
-// Optionales NFT-Gate
 async function passesNftGate(env, owner, gateMint) {
   try {
     const rpc = await getPublicRpcUrl(env);
-    const res = await rpcCall(rpc, "getTokenAccountsByOwner", [
-      owner, { mint: gateMint }, { encoding: "jsonParsed", commitment: "confirmed" }
-    ]);
+    const res = await rpcCall(rpc, "getTokenAccountsByOwner",
+      [owner, { mint: gateMint }, { encoding:"jsonParsed", commitment:"confirmed" }]);
     for (const it of res?.value || []) {
       const amt = it?.account?.data?.parsed?.info?.tokenAmount?.uiAmount || 0;
       if (amt > 0) return true;
     }
     return false;
-  } catch {
-    return true; // keine harten False-Positives bei temporären RPC-Issues
-  }
+  } catch { return true; }
 }
 
 function makeSolanaPayUrl({ to, amount, splToken, label, message }) {
@@ -449,11 +351,10 @@ function isAddress(s){ return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(s || "
 function toNumOrNull(x){ if (x==null || x==="") return null; const n = Number(x); return Number.isFinite(n)? n : null; }
 async function isJson(req){ return (req.headers.get("content-type")||"").toLowerCase().includes("application/json"); }
 function adminOk(req, env){ return (req.headers.get("x-admin-key") || "") === String(env.RECONCILE_KEY || ""); }
-
 function J(obj, status=200, extra={}) {
   return new Response(JSON.stringify(obj), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control":"no-store", ...secHeaders(), ...extra }
+    headers: { "content-type":"application/json; charset=utf-8", "cache-control":"no-store", ...secHeaders(), ...extra }
   });
 }
 function secHeaders(){
