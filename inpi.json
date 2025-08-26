@@ -1,7 +1,7 @@
 {
   "name": "Inpinity Token",
   "symbol": "INPI",
-  "description": "Offizielles Zahlungsmittel des Inpinity-Ökosystems auf Solana. π-Supply (3,141,592,653), 9 Decimals. Presale in USDC, Startpool INPI/USDC, LP-Lock, Staking (7%), Eco-Reserve (4Y Cliff → 4Y linear).",
+  "description": "Offizielles Zahlungsmittel des Inpinity-Ökosystems auf Solana. π-Supply (3,141,592,653), 0 Decimals. Presale in USDC, Startpool INPI/USDC, LP-Lock, Staking (geplant), Ecosystem-Reserve (Cliff/Linear).",
   "image": "https://inpinity.online/token/inpi.png",
   "external_url": "https://inpinity.online/token",
   "tags": ["currency", "utility", "gaming", "inpinity", "solana", "pi"],
@@ -14,21 +14,129 @@
     "docs": "https://inpinity.online/token#docs",
     "contact": "info@inpinity.online"
   },
+
   "chainId": 101,
   "mintAddress": "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
-  "decimals": 9,
+  "decimals": 0,
+
+  "addresses": {
+    "inpi_mint": "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
+    "usdc_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "presale_deposit_usdc_ata": "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
+    "explorer": {
+      "solscan_mint": "https://solscan.io/token/GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1"
+    }
+  },
+
+  "authorities": {
+    "mintAuthority": "Disabled",
+    "freezeAuthority": "None",
+    "notes": [
+      "Mint authority disabled (renounced).",
+      "Freeze authority not set – FreezeAccount nicht möglich (vertrauensbildend)."
+    ]
+  },
+
+  "rpc": ["https://inpinity.online/rpc"],
+
+  "supply": {
+    "total": "3141592653",
+    "policy": "fixed"
+  },
+
+  "pricing": {
+    "presale_usdc_per_inpi": "0.00031415",
+    "public_usdc_per_inpi_nft_holder": "0.003141",
+    "public_usdc_per_inpi": "0.03141"
+  },
+
+  "presale": {
+    "state": "pre",
+    "tge_ts": 1764003600,
+    "deposit_usdc_ata": "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
+    "cap_per_wallet_usdc": 1000,
+    "min_usdc": 5,
+    "max_usdc": 25000,
+    "api_endpoints": {
+      "status": "https://inpinity.online/api/token/status",
+      "deposit_balance": "https://inpinity.online/api/token/deposit/balance",
+      "wallet_balances": "https://inpinity.online/api/token/wallet/balances",
+      "presale_intent": "https://inpinity.online/api/token/presale/intent",
+      "claim_status": "https://inpinity.online/api/token/claim/status"
+    }
+  },
+
   "lp": {
     "primaryPair": "INPI/USDC",
     "initialPriceUSDC": "0.00031415",
     "lpLock": "9m"
   },
-  "supply": {
-    "total": "3141592653",
-    "policy": "fixed",
-    "mintAuthority": "None"
+
+  "allocations": {
+    "supply_total": "3141592653",
+    "mint": "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
+    "items": [
+      {
+        "label": "Treasury",
+        "owner": "32669zf51cK5FtvvHszFNLTCYiM9aT93tbWeyfKwWxbV",
+        "ata": "35mGvmjXGe5KkJ8xcfDHZc2PzvAjgZyh4hxRvBkSzWNW",
+        "amount": "722566310",
+        "percent": 23
+      },
+      {
+        "label": "Ecosystem",
+        "owner": "FuFVSBHQTZzxuWJhaMDod2cPf4oM4kPQwS85YhTWxGfq",
+        "ata": "AU17rNBCjJj1UppYadMFj871pip7HXNsDM2gUeuhfqa",
+        "amount": "628318531",
+        "percent": 20
+      },
+      {
+        "label": "Team",
+        "owner": "FZpDLHQUoGzF64W3adVX6xidahwPZGA5ii1Fgz1AU3fJ",
+        "ata": "6oLVjkwvMKedr75SEoQ3ztHei7u2GZDAqo1maDtxUwJc",
+        "amount": "314159265",
+        "percent": 10
+      },
+      {
+        "label": "Staking",
+        "owner": "DZ9BG5TAwo6hxb4HwbbYT2xsCZXdq3CpJ3F8B3qHiWnd",
+        "ata": "7zC5zjN9gG5v2LmPJQR98FS8yHB8PEvfu6xrVcaNWBe7",
+        "amount": "534070751",
+        "percent": 17
+      },
+      {
+        "label": "Presale/Creator",
+        "owner": "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
+        "amount": "942477796",
+        "percent": 30
+      }
+    ],
+    "notes": [
+      "Mint authority disabled (renounced).",
+      "Freeze authority not set – FreezeAccount nicht möglich (vertrauensbildend).",
+      "Decimals = 0."
+    ],
+    "updated_at": 1756205867000
   },
+
+  "vaults": {
+    "treasury":   { "owner": "32669zf51cK5FtvvHszFNLTCYiM9aT93tbWeyfKwWxbV", "ata": "35mGvmjXGe5KkJ8xcfDHZc2PzvAjgZyh4hxRvBkSzWNW", "planned_amount": "722566310" },
+    "ecosystem":  { "owner": "FuFVSBHQTZzxuWJhaMDod2cPf4oM4kPQwS85YhTWxGfq", "ata": "AU17rNBCjJj1UppYadMFj871pip7HXNsDM2gUeuhfqa", "planned_amount": "628318531" },
+    "team":       { "owner": "FZpDLHQUoGzF64W3adVX6xidahwPZGA5ii1Fgz1AU3fJ", "ata": "6oLVjkwvMKedr75SEoQ3ztHei7u2GZDAqo1maDtxUwJc", "planned_amount": "314159265" },
+    "staking":    { "owner": "DZ9BG5TAwo6hxb4HwbbYT2xsCZXdq3CpJ3F8B3qHiWnd", "ata": "7zC5zjN9gG5v2LmPJQR98FS8yHB8PEvfu6xrVcaNWBe7", "planned_amount": "534070751" },
+    "presale_creator": { "owner": "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp", "planned_amount": "942477796" }
+  },
+
+  "verification": {
+    "allocations_kv_key": "token:allocations",
+    "allocations_updated_at": 1756205867000,
+    "onchain_audit_endpoint": "https://inpinity.online/api/token/allocations/onchain",
+    "api_status": "https://inpinity.online/api/token/status"
+  },
+
   "legal": {
     "disclaimer": "Kein Wertpapier; reiner Utility-Token im Inpinity-Ökosystem."
   },
-  "version": "1.0.1"
+
+  "version": "1.1.0"
 }
