@@ -37,7 +37,7 @@ export default {
     }
 
     // UI
-    if (req.method === "GET" && p === "/admin") return ui(env);
+    if (req.method === "GET" && (p === "/admin" || p === "/admin/")) return ui(env);
 
     // -------- CONFIG API --------
     if (req.method === "GET" && p === "/admin/config") {
@@ -158,7 +158,7 @@ function ipOk(req, env) {
   return allow.includes(ip);
 }
 function needsOtp(path) {
-  if (path === "/admin" || path === "/admin/health") return false;
+  if (path === "/admin" || path === "/admin/" || path === "/admin/health") return false;
   return path.startsWith("/admin/config") || path.startsWith("/admin/cron") || path.startsWith("/admin/ops");
 }
 
@@ -399,8 +399,18 @@ small.mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 
 .grid{ display:grid; grid-template-columns: 220px 1fr; gap:.6rem .8rem; align-items:center; }
 .muted{ color:#a9b3be }
 hr{ border:0; border-top:1px solid #233; margin:12px 0; }
+pre.small{ font-size:12px; white-space:pre-wrap; word-break:break-word }
+.row{ display:flex; gap:.5rem; flex-wrap:wrap; align-items:center }
+input[type="number"]{ width:120px }
 </style>
-<header><h1>INPI Admin</h1><span class="muted" style="margin-left:auto">OTP-geschützt</span></header>
+<header>
+  <h1>INPI Admin</h1>
+  <div class="row" style="margin-left:auto">
+    <label for="otp" class="muted">OTP</label>
+    <input id="otp" placeholder="123456" inputmode="numeric" pattern="\\d*" />
+    <button id="saveOtp" class="secondary">Save OTP</button>
+  </div>
+</header>
 <main>
   <section class="card">
     <h2>Config bearbeiten</h2>
@@ -413,20 +423,21 @@ hr{ border:0; border-top:1px solid #233; margin:12px 0; }
       <label>Value</label>
       <textarea id="val" rows="2" placeholder="Wert (String)"></textarea>
       <div></div>
-      <div style="display:flex; gap:.5rem">
+      <div class="row">
         <button id="btnSet">Set</button>
         <button id="btnDel" class="secondary">Delete</button>
       </div>
     </div>
     <p class="muted" style="margin-top:.6rem">
       Hinweis: Für dein NFT-Gate ist <b>gate_collection</b> = <code>6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ</code> korrekt.
-      <br/>Die Early-Claim Option aktivierst du mit <code>early_claim_enabled = true</code>. Separater Fee-ATA: <code>early_fee_usdc_ata</code>.
+      <br/>Child-NFTs (einzelne Asset/Mint IDs) sind ebenfalls zulässig. Mehrere Werte via Komma.
+      <br/>Early-Claim: <code>early_claim_enabled = true</code>. Separater Fee-ATA: <code>early_fee_usdc_ata</code>.
     </p>
   </section>
 
   <section class="card">
     <h2>Export / Import</h2>
-    <div style="display:flex; gap:.5rem; flex-wrap:wrap">
+    <div class="row">
       <button id="btnExport">Export JSON</button>
       <input type="file" id="file" accept="application/json"/>
       <button id="btnImport" class="secondary">Import</button>
@@ -435,45 +446,148 @@ hr{ border:0; border-top:1px solid #233; margin:12px 0; }
   </section>
 
   <section class="card">
+    <h2>Cron & Ops</h2>
+    <div class="row">
+      <button id="btnCronStatus">Cron Status</button>
+    </div>
+    <hr/>
+    <div>
+      <h3>Presale Reconcile</h3>
+      <div class="row">
+        <input id="recWallet" placeholder="optional wallet"/>
+        <input id="recSince" type="number" placeholder="since_slot (optional)"/>
+        <input id="recLimit" type="number" placeholder="limit (optional)"/>
+        <button id="btnReconcile">Run</button>
+      </div>
+    </div>
+    <hr/>
+    <div>
+      <h3>Early-Claims</h3>
+      <div class="row">
+        <input id="ecLimit" type="number" placeholder="limit (optional)"/>
+        <label><input type="checkbox" id="ecDry"/> dry_run</label>
+        <button id="btnEarlyClaims">Run</button>
+      </div>
+    </div>
+    <hr/>
+    <div>
+      <h3>OPS Peek</h3>
+      <div class="row">
+        <input id="opsPrefix" placeholder="prefix z.B. early_job:"/>
+        <input id="opsLimit" type="number" placeholder="limit"/>
+        <button id="btnOpsPeek">Peek</button>
+      </div>
+    </div>
+    <pre id="cronOut" class="small"></pre>
+  </section>
+
+  <section class="card">
+    <h2>Gate Checker</h2>
+    <div class="row">
+      <input id="chkWallet" placeholder="Wallet Adresse" />
+      <button id="btnGateCheck">Check gate_ok</button>
+    </div>
+    <pre id="gateOut" class="small"></pre>
+  </section>
+
+  <section class="card">
     <h2>Aktuelle Werte</h2>
     <pre id="dump" class="small"></pre>
   </section>
 </main>
 <script>
-async function j(url, opt){ const r = await fetch(url, opt); const t = await r.text(); try { return { ok:r.ok, j: JSON.parse(t) }; } catch { return { ok:r.ok, j:{}, raw:t }; } }
+const OTP_KEY = "inpi_admin_otp";
+function getOtp(){ return document.getElementById('otp').value.trim(); }
+function setOtp(v){ document.getElementById('otp').value = v || ""; }
+document.getElementById('saveOtp').onclick = ()=>{ localStorage.setItem(OTP_KEY, getOtp()); alert('OTP gespeichert'); };
+setOtp(localStorage.getItem(OTP_KEY) || "");
+
+async function jfetch(url, opt={}){
+  const otp = getOtp();
+  opt.headers = opt.headers || {};
+  if (otp) opt.headers['x-otp'] = otp;
+  const r = await fetch(url, opt);
+  const t = await r.text();
+  let j=null; try { j = JSON.parse(t); } catch {}
+  return { ok:r.ok, status:r.status, j, raw:t, r };
+}
+
 async function loadKeys(){
-  const { j } = await j('/admin/config/keys');
+  const { j } = await jfetch('/admin/config/keys');
   const sel = document.getElementById('key');
   sel.innerHTML='';
-  (j.keys||[]).forEach(k=>{ const o=document.createElement('option'); o.value=k; o.textContent=k; sel.appendChild(o); });
+  (j?.keys||[]).forEach(k=>{ const o=document.createElement('option'); o.value=k; o.textContent=k; sel.appendChild(o); });
 }
 async function loadDump(){
-  const { j } = await j('/admin/config');
+  const { j } = await jfetch('/admin/config');
   const dump = document.getElementById('dump');
-  dump.textContent = JSON.stringify(j.values||{}, null, 2);
+  dump.textContent = JSON.stringify(j?.values||{}, null, 2);
 }
 document.getElementById('btnSet').onclick = async()=>{
   const key = document.getElementById('key').value;
   const value = document.getElementById('val').value;
-  const { j:res } = await j('/admin/config/set', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ key, value }) });
+  const { j:res } = await jfetch('/admin/config/set', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ key, value }) });
   alert(JSON.stringify(res));
   loadDump();
 };
 document.getElementById('btnDel').onclick = async()=>{
   const key = document.getElementById('key').value;
-  const { j:res } = await j('/admin/config/delete', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ key }) });
+  const { j:res } = await jfetch('/admin/config/delete', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ key }) });
   alert(JSON.stringify(res));
   loadDump();
 };
 document.getElementById('btnExport').onclick = async()=>{
-  const r = await fetch('/admin/config/export');
+  const { r } = await jfetch('/admin/config/export');
   const b = await r.blob(); const a=document.createElement('a'); a.href= URL.createObjectURL(b); a.download='inpi-config-export.json'; a.click();
 };
 document.getElementById('btnImport').onclick = async()=>{
   const f = document.getElementById('file').files[0]; if(!f) return alert('JSON wählen');
-  const txt = await f.text(); const { j:res } = await j('/admin/config/import', { method:'POST', headers:{'content-type':'application/json'}, body: txt });
+  const txt = await f.text(); const { j:res } = await jfetch('/admin/config/import', { method:'POST', headers:{'content-type':'application/json'}, body: txt });
   alert(JSON.stringify(res)); loadDump();
 };
+
+/* Cron & Ops */
+document.getElementById('btnCronStatus').onclick = async()=>{
+  const r = await jfetch('/admin/cron/status');
+  document.getElementById('cronOut').textContent = r.raw;
+};
+document.getElementById('btnReconcile').onclick = async()=>{
+  const wallet = document.getElementById('recWallet').value.trim();
+  const since = Number(document.getElementById('recSince').value||'');
+  const limit = Number(document.getElementById('recLimit').value||'');
+  const body = {};
+  if (wallet) body.only_wallet = wallet;
+  if (Number.isFinite(since) && since>0) body.since_slot = since;
+  if (Number.isFinite(limit) && limit>0) body.limit = limit;
+  const r = await jfetch('/admin/cron/reconcile', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) });
+  document.getElementById('cronOut').textContent = r.raw;
+};
+document.getElementById('btnEarlyClaims').onclick = async()=>{
+  const limit = Number(document.getElementById('ecLimit').value||'');
+  const dry = document.getElementById('ecDry').checked;
+  const body = {};
+  if (Number.isFinite(limit) && limit>0) body.limit = limit;
+  if (dry) body.dry_run = true;
+  const r = await jfetch('/admin/cron/early-claims', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) });
+  document.getElementById('cronOut').textContent = r.raw;
+};
+document.getElementById('btnOpsPeek').onclick = async()=>{
+  const prefix = encodeURIComponent(document.getElementById('opsPrefix').value||'');
+  const l = encodeURIComponent(document.getElementById('opsLimit').value||'');
+  const qs = new URLSearchParams(); if (prefix) qs.set('prefix', decodeURIComponent(prefix)); if (l) qs.set('limit', decodeURIComponent(l));
+  const r = await jfetch('/admin/ops/peek' + (qs.toString() ? ('?' + qs.toString()) : ''));
+  document.getElementById('cronOut').textContent = r.raw;
+};
+
+/* Gate Check */
+document.getElementById('btnGateCheck').onclick = async ()=>{
+  const w = document.getElementById('chkWallet').value.trim();
+  if(!w) return alert('Wallet eingeben');
+  const r = await fetch('/api/token/wallet/balances?wallet=' + encodeURIComponent(w));
+  const t = await r.text();
+  document.getElementById('gateOut').textContent = t;
+};
+
 loadKeys().then(loadDump);
 </script>`;
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", ...secHeaders() }});
