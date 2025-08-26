@@ -124,6 +124,14 @@ export default {
       return pass(r);
     }
 
+    // NEU: Early-Claims in OPS anstoßen
+    if (req.method === "POST" && p === "/admin/cron/early-claims") {
+      if (!(await requireJson(req))) return badCT();
+      const body = await req.json().catch(() => ({}));
+      const r = await proxyCron(env, "/early-claims", "POST", body);
+      return pass(r);
+    }
+
     if (req.method === "GET" && p === "/admin/ops/peek") {
       const q = url.searchParams.toString();
       const r = await proxyCron(env, `/ops/peek${q ? "?" + q : ""}`, "GET", null);
@@ -328,6 +336,7 @@ pre{ background:#0e1116; border:1px solid #2a3240; border-radius:10px; padding:1
       <div class="row">
         <button onclick="loadStatus()">Status aktualisieren</button>
         <button class="secondary" onclick="reconcileNow()">Reconcile Presale → OPS</button>
+        <button class="secondary" onclick="earlyClaims()">Early-Claims → OPS</button>
         <div class="small" id="dashMsg"></div>
       </div>
       <div class="grid" id="statsGrid"></div>
@@ -449,6 +458,19 @@ async function reconcileNow(){
   loadStatus();
 }
 
+async function earlyClaims(){
+  var limit = prompt("Max. Early-Claims (z.B. 100):", "100");
+  if (!limit) return;
+  var headers = otpHdr(); headers['content-type']='application/json';
+  var r = await fetch('/admin/cron/early-claims', {
+    method:'POST',
+    headers: headers,
+    body: JSON.stringify({ limit: Number(limit) })
+  });
+  alert(await r.text());
+  loadStatus();
+}
+
 async function peekQueue(){
   var kind = document.getElementById('peekKind').value || "";
   var limit = document.getElementById('peekLimit').value || "10";
@@ -471,10 +493,15 @@ var SCHEMA = [
   // Gates
   { key:"nft_gate_enabled", label:"NFT-Gate aktiv?", type:"select", options:["false","true"], hint:"Nur Käufer mit NFT-Collection" },
   { key:"gate_collection", label:"NFT Collection", type:"text", hint:"Collection-Adresse" },
+  { key:"gate_mint", label:"NFT Gate Mint", type:"text", hint:"Mint der NFT-Collection (Gate)" },
   { key:"public_mint_enabled", label:"Public-Gate aktiv?", type:"select", options:["false","true"], hint:"Ohne NFT erlaubt" },
   { key:"public_mint_price_usdc", label:"Public-Preis (USDC)", type:"number", min:0, step:"0.000001" },
   { key:"public_mint_fee_bps", label:"Public Fee (bps)", type:"number", min:0, max:10000, step:1 },
   { key:"public_mint_fee_dest", label:"Fee Ziel", type:"select", options:["lp","treasury"], hint:"Standard: lp" },
+
+  // Tiered Pricing (NFT vs. Public)
+  { key:"tier_nft_price_usdc", label:"Preis MIT NFT (USDC)", type:"number", min:0, step:"0.000001" },
+  { key:"tier_public_price_usdc", label:"Preis OHNE NFT (USDC)", type:"number", min:0, step:"0.000001" },
 
   // LP / Locks
   { key:"lp_split_bps", label:"LP-Split (bps)", type:"number", min:0, max:10000, step:1, hint:"Bsp 5000=50%" },
@@ -526,6 +553,12 @@ var SCHEMA = [
   { key:"project_uri", label:"Project URI", type:"text", hint:"https://inpinity.online/token" },
   { key:"whitepaper_sha256", label:"Whitepaper SHA-256", type:"text", hint:"Hash der PDF" },
   { key:"twap_enabled", label:"TWAP aktiv?", type:"select", options:["false","true"] },
+
+  // Early-Claim / Bonus
+  { key:"early_claim_enabled", label:"Early Claim erlaubt?", type:"select", options:["false","true"], hint:"Claim vor TGE/Öffnung" },
+  { key:"early_claim_fee_bps", label:"Early Claim Fee (bps)", type:"number", min:0, max:10000, step:1 },
+  { key:"early_claim_fee_dest", label:"Early Fee Ziel", type:"select", options:["lp","treasury"], hint:"Ziel der Fee" },
+  { key:"wait_bonus_bps", label:"Warte-Bonus (bps)", type:"number", min:0, max:10000, step:1, hint:"+Bonus für Nicht-Early" },
 
   // Distribution (bps, sum=10000)
   { key:"dist_presale_bps", label:"Dist Presale (bps)", type:"number", min:0, max:10000, step:1 },
@@ -609,7 +642,7 @@ function validate(){
     var elx = document.getElementById("fld_"+fld.key);
     if (!elx) continue;
 
-    // NEU: Nur geänderte Felder validieren
+    // Nur geänderte Felder validieren
     if (!elx.dataset || elx.dataset.changed !== "1") continue;
 
     if (elx.type==="number"){
