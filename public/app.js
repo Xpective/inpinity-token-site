@@ -23,9 +23,13 @@ const CFG = {
 const { Connection } = solanaWeb3;
 const $ = (sel) => document.querySelector(sel);
 const short = (a) => (a?.slice(0, 4) + "…" + a?.slice(-4));
-function fmt(n, d = 2) { if (n == null || isNaN(n)) return "–"; return Number(n).toLocaleString("de-DE",{maximumFractionDigits:d}); }
+function fmt(n, d = 2) { if (n == null || isNaN(n)) return "—"; return Number(n).toLocaleString("de-DE",{maximumFractionDigits:d}); }
+function fmt0(n) { return fmt(n, 0); }
+function pctFromBps(bps){ if (bps == null) return "—"; return (Number(bps)/100).toLocaleString("de-DE", {maximumFractionDigits:2}) + " %"; }
 function solscan(addr){ return `https://solscan.io/account/${addr}`; }
 function nowSec(){ return Math.floor(Date.now()/1000); }
+function toNum(x){ const n = Number(x); return Number.isFinite(n) ? n : null; }
+function fill(id, val){ const el = (typeof id === "string") ? $(id) : id; if (el) el.textContent = (val ?? "—"); }
 
 // UI-Refs
 const btnConnect = $("#btnConnect");
@@ -42,6 +46,9 @@ const btnHowTo = $("#btnHowTo");
 const intentMsg = $("#intentMsg");
 const depositAddrEl = $("#depositAddr");
 const depositSolscanA = $("#depositSolscan");
+const depositOwnerEl = $("#depositOwner");
+const btnCopyDeposit = $("#btnCopyDeposit");
+const gateHint = $("#gateHint");
 
 // Pay-Area (Presale)
 const payArea = $("#payArea");
@@ -56,6 +63,21 @@ const earlyQR = $("#early-qr");
 const earlyExpect = $("#earlyExpected");
 const earlySig = $("#earlySig");
 const btnEarlyConfirm = $("#btnEarlyConfirm");
+
+// Tokenomics-Refs
+const tokSupply = $("#tokSupply");
+const tokRows = {
+  presale: { pct: $("#tokPresalePct"), qty: $("#tokPresaleQty") },
+  dex:     { pct: $("#tokDexPct"),     qty: $("#tokDexQty")     },
+  staking: { pct: $("#tokStakingPct"), qty: $("#tokStakingQty") },
+  eco:     { pct: $("#tokEcoPct"),     qty: $("#tokEcoQty")     },
+  treasury:{ pct: $("#tokTreasuryPct"),qty: $("#tokTreasuryQty")},
+  team:    { pct: $("#tokTeamPct"),    qty: $("#tokTeamQty")    },
+  airdrop: { pct: $("#tokAirdropPct"), qty: $("#tokAirdropQty") },
+  buyback: { pct: $("#tokBuybackPct"), qty: $("#tokBuybackQty") }
+};
+const govMultisigEl = $("#govMultisig");
+const timelockEl = $("#timelock");
 
 // Optionaler Badge bei Preiszeile
 let gateBadge = document.getElementById("gateBadge");
@@ -82,6 +104,7 @@ const STATE = {
   presale_state: "pre",
   tge_ts: null,
   deposit_ata: null,
+  deposit_owner: null,
 
   presale_min_usdc: null,
   presale_max_usdc: null,
@@ -96,7 +119,22 @@ const STATE = {
   early: { enabled:false, flat_usdc:1, fee_dest_wallet:null },
 
   // Claimbar
-  claimable_inpi: 0
+  claimable_inpi: 0,
+
+  // Tokenomics
+  supply_total: null,
+  dist: {
+    presale: null,
+    dex: null,
+    staking: null,
+    eco: null,
+    treasury: null,
+    team: null,
+    airdrop: null,
+    buyback: null
+  },
+  governance_multisig: null,
+  timelock_seconds: null
 };
 
 /* ---------- Preis/Erwartung ---------- */
@@ -105,9 +143,9 @@ function currentPriceUSDC() {
   return STATE.gate_ok ? STATE.price_with_nft_usdc : STATE.price_without_nft_usdc;
 }
 function calcExpectedInpi(usdc) {
-  if (!usdc || usdc <= 0) return "–";
+  if (!usdc || usdc <= 0) return "—";
   const price = currentPriceUSDC();
-  if (!price || price <= 0) return "–";
+  if (!price || price <= 0) return "—";
   const tokens = usdc / price;
   return fmt(tokens, 0) + " INPI";
 }
@@ -117,13 +155,23 @@ function updatePriceRow() {
   const wo = STATE.price_without_nft_usdc;
   const active = currentPriceUSDC();
 
-  const withTxt = (w && w > 0) ? Number(w).toFixed(6) + " USDC" : "–";
-  const woTxt   = (wo && wo > 0) ? Number(wo).toFixed(6) + " USDC" : "–";
-  const actTxt  = (active && active > 0) ? Number(active).toFixed(6) + " USDC" : "–";
+  const withTxt = (w && w > 0) ? Number(w).toFixed(6) + " USDC" : "—";
+  const woTxt   = (wo && wo > 0) ? Number(wo).toFixed(6) + " USDC" : "—";
+  const actTxt  = (active && active > 0) ? Number(active).toFixed(6) + " USDC" : "—";
   const badge = STATE.gate_ok ? "NFT ✓" : "NFT ✗";
 
   p0.textContent = `mit NFT: ${withTxt} • ohne NFT: ${woTxt} • dein aktiv: ${actTxt}`;
   if (gateBadge) gateBadge.textContent = `(${badge})`;
+
+  if (gateHint) {
+    if (!STATE.gate_ok && (STATE.price_without_nft_usdc == null || STATE.price_without_nft_usdc <= 0)) {
+      gateHint.textContent = "Nur mit NFT zugelassen (Gate aktiv).";
+      gateHint.style.display = "inline";
+    } else {
+      gateHint.textContent = "";
+      gateHint.style.display = "none";
+    }
+  }
 }
 
 /* ---------- Intent-Verfügbarkeit ---------- */
@@ -140,7 +188,6 @@ function updateIntentAvailability() {
     btnPresaleIntent.title = reason || "";
   }
   if (intentMsg) {
-    // optionalen Hinweis rendern
     const id = "intent-reason";
     let el = document.getElementById(id);
     if (reason) {
@@ -164,10 +211,18 @@ async function init() {
 
   updatePriceRow();
   updateIntentAvailability();
+  renderTokenomics();
 
   if (inpAmount && STATE.presale_min_usdc != null) inpAmount.min = String(STATE.presale_min_usdc);
   if (inpAmount && STATE.presale_max_usdc != null) inpAmount.max = String(STATE.presale_max_usdc);
   if (inpAmount && !inpAmount.step) inpAmount.step = "0.000001";
+
+  if (btnCopyDeposit) {
+    btnCopyDeposit.onclick = async ()=>{
+      if (!STATE.deposit_ata) return;
+      try { await navigator.clipboard.writeText(STATE.deposit_ata); alert("Adresse kopiert."); } catch { alert("Konnte nicht kopieren."); }
+    };
+  }
 
   if (window.solana?.isPhantom) {
     provider = window.solana;
@@ -247,13 +302,13 @@ async function refreshStatus(){
 
     // Deposit-ATA (kann leer sein, dann Fallback NUR wenn API leer/kaputt wirkt)
     STATE.deposit_ata   = j?.deposit_usdc_ata || CFG.DEPOSIT_USDC_ATA_FALLBACK;
+    STATE.deposit_owner = j?.deposit_usdc_owner || null;
 
     // Limits direkt aus API (können null sein)
     STATE.presale_min_usdc = (typeof j?.presale_min_usdc === "number") ? j.presale_min_usdc : null;
     STATE.presale_max_usdc = (typeof j?.presale_max_usdc === "number") ? j.presale_max_usdc : null;
 
     // Preise aus Status – WICHTIG:
-    // Wir respektieren absichtliche nulls (z.B. price_without_nft_usdc=null => kein Public ohne NFT)
     const hasW  = ("price_with_nft_usdc" in (j||{}));
     const hasWo = ("price_without_nft_usdc" in (j||{}));
 
@@ -272,9 +327,24 @@ async function refreshStatus(){
     STATE.early.flat_usdc = Number(ec.flat_usdc || 1);
     STATE.early.fee_dest_wallet = ec.fee_dest_wallet || STATE.deposit_ata || null;
 
+    // Tokenomics (falls Backend sie liefert)
+    STATE.supply_total = toNum(j?.supply_total);
+    STATE.dist.presale = toNum(j?.dist_presale_bps);
+    STATE.dist.dex     = toNum(j?.dist_dex_liquidity_bps);
+    STATE.dist.staking = toNum(j?.dist_staking_bps);
+    STATE.dist.eco     = toNum(j?.dist_ecosystem_bps);
+    STATE.dist.treasury= toNum(j?.dist_treasury_bps);
+    STATE.dist.team    = toNum(j?.dist_team_bps);
+    STATE.dist.airdrop = toNum(j?.dist_airdrop_nft_bps);
+    STATE.dist.buyback = toNum(j?.dist_buyback_reserve_bps);
+
+    STATE.governance_multisig = j?.governance_multisig || null;
+    STATE.timelock_seconds    = toNum(j?.timelock_seconds);
+
     if (presaleState) presaleState.textContent = STATE.presale_state;
     updatePriceRow();
     updateIntentAvailability();
+    renderTokenomics();
   } catch (e) {
     console.error(e);
 
@@ -285,6 +355,7 @@ async function refreshStatus(){
     STATE.presale_state = "pre";
     STATE.tge_ts        = CFG.TGE_TS_FALLBACK;
     STATE.deposit_ata   = CFG.DEPOSIT_USDC_ATA_FALLBACK;
+    STATE.deposit_owner = null;
 
     STATE.price_with_nft_usdc    = CFG.PRICE_WITH_NFT_FALLBACK;
     STATE.price_without_nft_usdc = CFG.PRICE_WITHOUT_NFT_FALLBACK;
@@ -292,6 +363,7 @@ async function refreshStatus(){
     if (presaleState) presaleState.textContent = "API offline";
     updatePriceRow();
     updateIntentAvailability();
+    renderTokenomics();
   }
 
   if (depositAddrEl) {
@@ -301,7 +373,45 @@ async function refreshStatus(){
       depositSolscanA.style.display = "inline";
     } else if (depositSolscanA) depositSolscanA.style.display = "none";
   }
+  if (depositOwnerEl) {
+    depositOwnerEl.textContent = STATE.deposit_owner ? short(STATE.deposit_owner) : "—";
+    if (STATE.deposit_owner) depositOwnerEl.setAttribute("title", STATE.deposit_owner);
+  }
   if (earlyBox) earlyBox.style.display = STATE.early.enabled ? "block" : "none";
+}
+
+/* ---------- Tokenomics render ---------- */
+function renderTokenomics(){
+  if (tokSupply) fill(tokSupply, STATE.supply_total != null ? fmt0(STATE.supply_total) + " INPI" : "—");
+
+  const calcQty = (bps)=>{
+    if (STATE.supply_total == null || bps == null) return null;
+    return Math.floor(STATE.supply_total * (Number(bps)/10000));
+  };
+
+  const rows = [
+    ["presale","dist_presale_bps"],
+    ["dex","dist_dex_liquidity_bps"],
+    ["staking","dist_staking_bps"],
+    ["eco","dist_ecosystem_bps"],
+    ["treasury","dist_treasury_bps"],
+    ["team","dist_team_bps"],
+    ["airdrop","dist_airdrop_nft_bps"],
+    ["buyback","dist_buyback_reserve_bps"]
+  ];
+
+  for (const [key] of rows){
+    const bps = STATE.dist[key];
+    const qty = calcQty(bps);
+    if (tokRows[key]) {
+      fill(tokRows[key].pct, pctFromBps(bps));
+      fill(tokRows[key].qty,  qty != null ? fmt0(qty) + " INPI" : "—");
+    }
+  }
+
+  if (govMultisigEl) fill(govMultisigEl, STATE.governance_multisig ? short(STATE.governance_multisig) : "—");
+  if (govMultisigEl && STATE.governance_multisig) govMultisigEl.title = STATE.governance_multisig || "";
+  if (timelockEl) fill(timelockEl, STATE.timelock_seconds != null ? STATE.timelock_seconds + " s" : "—");
 }
 
 /* ---------- Claim-Status (claimbar) ---------- */
@@ -315,7 +425,7 @@ async function refreshClaimStatus(){
   }catch(e){
     console.error(e);
     STATE.claimable_inpi = 0;
-    if (earlyExpect) earlyExpect.textContent = "–";
+    if (earlyExpect) earlyExpect.textContent = "—";
   }
 }
 
@@ -346,7 +456,7 @@ function onDisconnected(){
   if (inpiBal) inpiBal.textContent = "—";
   STATE.gate_ok = false;
   STATE.claimable_inpi = 0;
-  if (earlyExpect) earlyExpect.textContent = "–";
+  if (earlyExpect) earlyExpect.textContent = "—";
   updatePriceRow();
   updateIntentAvailability();
   clearInterval(POLL);
