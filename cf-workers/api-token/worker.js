@@ -1,4 +1,4 @@
-// INPI Token API (Deposit-Balance, Wallet-Balances, Intent, Reconcile/Claims)
+// INPI Token API (Deposit-Balance, Wallet-Balances, Intent, Reconcile, Claims)
 // KV-Bindings: CONFIG, PRESALE, INPI_CLAIMS
 // Vars (optional): GATE_MINT, PRESALE_MIN_USDC, PRESALE_MAX_USDC, RPC_URL
 // Secrets (optional): HELIUS_API_KEY, RECONCILE_KEY
@@ -168,7 +168,8 @@ Sobald die Zahlung erkannt ist, wird deine Zuteilung im System vermerkt. Claim a
       }
 
       // ---- PRESALE RECONCILE (admin)
-      if (req.method === "POST" && p === "/api/token/presale/reconcile-one") {
+      if (p === "/api/token/presale/reconcile-one") {
+        if (req.method !== "POST") return J({ ok:false, error:"method_not_allowed" }, 405, { "allow":"POST" });
         return reconcileOne(req, env);
       }
 
@@ -188,7 +189,154 @@ Sobald die Zahlung erkannt ist, wird deine Zuteilung im System vermerkt. Claim a
   }
 };
 
-/* ---------------- Helpers ---------------- */
+/* ---------------- Admin: Reconcile ---------------- */
+async function reconcileOne(req, env) {
+  if (!adminOk(req, env)) return J({ ok:false, error:"forbidden" }, 403);
+  if (!(await isJson(req))) return J({ ok:false, error:"bad_content_type" }, 415);
+
+  const body = await req.json().catch(() => ({}));
+  const wallet = String(body.wallet || "").trim();
+  const signature = String(body.signature || "").trim();
+  const overrideInpi = toNumOrNull(body.override_inpi);
+
+  if (!isAddress(wallet)) return J({ ok:false, error:"bad_wallet" }, 400);
+  if (!/^[1-9A-HJ-NP-Za-km-z]{43,88}$/.test(signature)) return J({ ok:false, error:"bad_signature" }, 400);
+
+  const cfg = await readPublicConfig(env);
+  const depo = cfg.presale_deposit_usdc || "";
+  if (!isAddress(depo)) return J({ ok:false, error:"deposit_not_ready" }, 503);
+
+  const rpc = await getPublicRpcUrl(env);
+  const tx = await rpcCall(rpc, "getTransaction", [
+    signature,
+    { maxSupportedTransactionVersion: 0, commitment: "confirmed" }
+  ]).catch((e) => { throw new Error("get_tx_failed: " + e.message); });
+
+  if (!tx) return J({ ok:false, error:"tx_not_found" }, 404);
+  const meta = tx.meta || {};
+  const pre = meta.preTokenBalances || [];
+  const post = meta.postTokenBalances || [];
+  const blockTime = tx.blockTime ? (tx.blockTime * 1000) : null;
+  const slot = tx.slot;
+
+  // Delta für Owner (Wallet) in USDC
+  const ownerDelta = ownerDeltaUSDC(pre, post, wallet);
+  if (!(ownerDelta > 0)) return J({ ok:false, error:"no_owner_outflow" }, 400);
+
+  // Delta für Deposit-ATA (muss ≈ ownerDelta sein)
+  const depoDelta = accountDeltaUSDC(pre, post, depo);
+  if (!(depoDelta > 0)) return J({ ok:false, error:"no_deposit_inflow" }, 400);
+
+  // Toleranz (Rundungen)
+  if (Math.abs(depoDelta - ownerDelta) > 0.000001) {
+    return J({ ok:false, error:"mismatch_amounts", ownerDelta, depoDelta }, 400);
+  }
+
+  const usdc = ownerDelta;
+
+  // INPI berechnen
+  let inpi;
+  if (overrideInpi != null && overrideInpi > 0) {
+    inpi = Math.floor(overrideInpi);
+  } else {
+    const price = toNumOrNull(cfg.presale_price_usdc);
+    if (!(price > 0)) return J({ ok:false, error:"price_not_set" }, 500);
+    inpi = Math.floor(usdc / price);
+  }
+
+  // Idempotenz: Wenn diese Signatur schon verbucht wurde, nichts doppelt zählen
+  const claim = await loadClaim(env, wallet);
+  if (claim.txs.some(t => t.signature === signature)) {
+    return J({ ok:true, already:true, wallet, signature, usdc, inpi, totals: {
+      total_usdc: claim.total_usdc, total_inpi: claim.total_inpi
+    }});
+  }
+
+  // Speichern
+  claim.total_usdc = round6(claim.total_usdc + usdc);
+  claim.total_inpi = Math.floor((claim.total_inpi || 0) + inpi);
+  claim.txs.push({
+    signature,
+    usdc,
+    inpi,
+    slot,
+    ts: blockTime || Date.now()
+  });
+  claim.updated_at = Date.now();
+
+  await saveClaim(env, wallet, claim);
+
+  return J({
+    ok: true,
+    wallet,
+    signature,
+    usdc,
+    inpi,
+    totals: { total_usdc: claim.total_usdc, total_inpi: claim.total_inpi },
+    updated_at: claim.updated_at
+  });
+}
+
+function ownerDeltaUSDC(pre, post, owner) {
+  const preBal = sumOwnerUSDC(pre, owner);
+  const postBal = sumOwnerUSDC(post, owner);
+  // Outflow vom Owner (positiv wenn Owner weniger hat)
+  const d = round6(Math.max(0, preBal - postBal));
+  return d;
+}
+
+function accountDeltaUSDC(pre, post, account) {
+  const p0 = findAccountUSDC(pre, account);
+  const p1 = findAccountUSDC(post, account);
+  if (p0 == null && p1 == null) return 0;
+  const a0 = p0?.uiAmount || 0;
+  const a1 = p1?.uiAmount || 0;
+  return round6(Math.max(0, a1 - a0));
+}
+
+function sumOwnerUSDC(arr, owner) {
+  let s = 0;
+  for (const b of arr || []) {
+    if (b.mint === USDC_MINT && (b.owner === owner)) {
+      const u = b.uiTokenAmount?.uiAmount ?? numFrom(b.uiTokenAmount?.amount, b.uiTokenAmount?.decimals);
+      s += Number(u || 0);
+    }
+  }
+  return round6(s);
+}
+
+function findAccountUSDC(arr, account) {
+  for (const b of arr || []) {
+    if (b.mint === USDC_MINT && b.account === account) {
+      const uiAmount = b.uiTokenAmount?.uiAmount ?? numFrom(b.uiTokenAmount?.amount, b.uiTokenAmount?.decimals);
+      return { uiAmount: Number(uiAmount || 0) };
+    }
+  }
+  return null;
+}
+
+/* ---------------- Claims: load/save ---------------- */
+async function loadClaim(env, wallet) {
+  const key = `claim:${wallet}`;
+  try {
+    const txt = await env.INPI_CLAIMS.get(key);
+    if (!txt) return { total_usdc: 0, total_inpi: 0, txs: [] };
+    const j = JSON.parse(txt);
+    if (!Array.isArray(j.txs)) j.txs = [];
+    j.total_usdc = Number(j.total_usdc || 0);
+    j.total_inpi = Math.floor(j.total_inpi || 0);
+    return j;
+  } catch {
+    return { total_usdc: 0, total_inpi: 0, txs: [] };
+  }
+}
+
+async function saveClaim(env, wallet, claim) {
+  const key = `claim:${wallet}`;
+  await env.INPI_CLAIMS.put(key, JSON.stringify(claim));
+}
+
+/* ---------------- Helpers (bestehend + neu) ---------------- */
 async function readPublicConfig(env) {
   const keys = [
     "INPI_MINT",
@@ -216,7 +364,7 @@ async function readPublicConfig(env) {
   return out;
 }
 
-// ---- EINZIGE Quelle der Wahrheit für RPC-URL (CONFIG > VAR > SECRET > Default)
+// EINZIGE Quelle der Wahrheit für RPC-URL (CONFIG > VAR > SECRET > Default)
 async function getPublicRpcUrl(env) {
   try {
     const fromCfg = await env.CONFIG.get("public_rpc_url");   // remote KV override
@@ -227,7 +375,7 @@ async function getPublicRpcUrl(env) {
   return "https://api.mainnet-beta.solana.com";               // letzter Fallback
 }
 
-// Robustes JSON-RPC: Text lesen, klarer Fehler wenn HTML/leer/blockiert
+// Robustes JSON-RPC
 async function rpcCall(rpcUrl, method, params) {
   const body = { jsonrpc: "2.0", id: 1, method, params };
   const r = await fetch(rpcUrl, {
@@ -300,6 +448,7 @@ function makeSolanaPayUrl({ to, amount, splToken, label, message }) {
 function isAddress(s){ return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(s || "")); }
 function toNumOrNull(x){ if (x==null || x==="") return null; const n = Number(x); return Number.isFinite(n)? n : null; }
 async function isJson(req){ return (req.headers.get("content-type")||"").toLowerCase().includes("application/json"); }
+function adminOk(req, env){ return (req.headers.get("x-admin-key") || "") === String(env.RECONCILE_KEY || ""); }
 
 function J(obj, status=200, extra={}) {
   return new Response(JSON.stringify(obj), {
@@ -319,192 +468,10 @@ function secHeaders(){
 function secTextHeaders(){
   return { "content-type":"text/plain; charset=utf-8", "cache-control":"no-store", ...secHeaders() };
 }
-
-/* ---------------- Reconcile / Claims ---------------- */
-
-const USDC_DECIMALS = 6;   // USDC on Solana
-const PRICE_SCALE   = 1e8; // presale_price_usdc wird auf 8 Dezimalen skaliert
-
-function adminOk(req, env) {
-  const k = req.headers.get("x-admin-key") || "";
-  return !!k && !!env.RECONCILE_KEY && k === env.RECONCILE_KEY;
-}
-
-async function reconcileOne(req, env) {
-  if (!(await isJson(req))) return J({ ok:false, error:"bad_content_type" }, 415);
-  if (!adminOk(req, env))   return J({ ok:false, error:"forbidden" }, 403);
-
-  const body = await req.json().catch(()=> ({}));
-  const wallet    = String(body.wallet || "").trim();
-  const signature = String(body.signature || "").trim();
-  const overrideInpi = Number(body.override_inpi || 0);              // optional: manueller Token-Override
-  const overridePrice = toNumOrNull(body.override_price_usdc);       // optional: manueller Preis
-
-  if (!isAddress(wallet)) return J({ ok:false, error:"bad_wallet" }, 400);
-  if (!/^[1-9A-HJ-NP-Za-km-z]{80,120}$/.test(signature)) return J({ ok:false, error:"bad_signature" }, 400);
-
-  const cfg   = await readPublicConfig(env);
-  const depo  = cfg.presale_deposit_usdc || "";
-  const price = overridePrice ?? toNumOrNull(cfg.presale_price_usdc);
-
-  if (!isAddress(depo)) return J({ ok:false, error:"deposit_not_ready" }, 503);
-  if (!(price > 0))     return J({ ok:false, error:"bad_price" }, 500);
-
-  // RPC: Tx holen
-  const rpc = await getPublicRpcUrl(env);
-  const tx  = await rpcCall(rpc, "getTransaction", [
-    signature,
-    { commitment: "confirmed", encoding: "json", maxSupportedTransactionVersion: 0 }
-  ]);
-
-  const meta = tx?.meta;
-  const msg  = tx?.transaction?.message;
-  if (!meta || !msg)  return J({ ok:false, error:"tx_missing_fields" }, 502);
-  if (meta.err)       return J({ ok:false, error:"tx_failed", detail: meta.err }, 422);
-
-  // AccountKeys-Resolver
-  const keys = Array.isArray(msg.accountKeys)
-    ? msg.accountKeys.map(k => (typeof k === "string" ? k : (k?.pubkey || "")))
-    : [];
-  const keyAt = (i) => (i>=0 && i<keys.length) ? keys[i] : "";
-
-  const pre  = meta.preTokenBalances  || [];
-  const post = meta.postTokenBalances || [];
-
-  // Delta auf DEPOSIT (sollte +X USDC sein)
-  const idxPostDepo = findTokenBalanceIndex(post, depo, USDC_MINT, keyAt);
-  const idxPreDepo  = findTokenBalanceIndex(pre,  depo, USDC_MINT, keyAt);
-  if (idxPostDepo < 0) return J({ ok:false, error:"no_usdc_to_deposit_in_tx" }, 422);
-
-  const postAmtStr = post[idxPostDepo]?.uiTokenAmount?.amount || "0";
-  const preAmtStr  = idxPreDepo >= 0 ? (pre[idxPreDepo]?.uiTokenAmount?.amount || "0") : "0";
-
-  const postRaw = BigInt(postAmtStr);
-  const preRaw  = BigInt(preAmtStr);
-
-  const dec = post[idxPostDepo]?.uiTokenAmount?.decimals;
-  if (dec !== USDC_DECIMALS) return J({ ok:false, error:"bad_usdc_decimals" }, 500);
-
-  const deltaDepositRaw = postRaw - preRaw;
-  if (deltaDepositRaw <= 0n) return J({ ok:false, error:"no_positive_delta" }, 422);
-
-  // Delta beim SENDER (owner == wallet) muss -X USDC sein
-  const deltaSenderRaw = ownerDeltaUSDC(pre, post, wallet, USDC_MINT);
-  if (deltaSenderRaw >= 0n) return J({ ok:false, error:"no_sender_outflow" }, 422);
-
-  // Plausibilitätscheck: gleiche Höhe (gleiche Tx)
-  if (deltaSenderRaw + deltaDepositRaw !== 0n) {
-    return J({ ok:false, error:"mismatch_deposit_sender", deposit:+deltaDepositRaw, sender:+deltaSenderRaw }, 422);
-  }
-
-  // Tokens berechnen (ganzzahlig, floor)
-  const priceScaled = priceToScaledInt(String(price), PRICE_SCALE);    // z.B. 0.00031415 → 31415 (bei 1e8 scale)
-  const deltaScaled = deltaDepositRaw * BigInt(PRICE_SCALE / 1e6);     // 6→8 Dez: *100
-  const inpiCalcRaw = deltaScaled / BigInt(priceScaled);               // floor
-  const inpiCalc    = Number(inpiCalcRaw);
-  const inpiFinal   = overrideInpi > 0 ? Math.floor(overrideInpi) : inpiCalc;
-
-  // Claim laden/speichern
-  const claim = await loadClaim(env, wallet);
-  if ((claim.txs || []).some(t => t.signature === signature)) {
-    return J({
-      ok:true, dedup:true, wallet, signature,
-      usdc: Number(deltaDepositRaw)/1e6,
-      inpi: inpiFinal,
-      price_used_usdc: price,
-      totals: { total_usdc: claim.total_usdc, total_inpi: claim.total_inpi },
-      updated_at: Date.now()
-    });
-  }
-
-  claim.wallet = wallet;
-  claim.txs = claim.txs || [];
-  claim.txs.push({
-    signature,
-    usdc_raw: deltaDepositRaw.toString(),
-    usdc: Number(deltaDepositRaw) / 1e6,
-    inpi: inpiFinal,
-    inpi_calc: inpiCalc,
-    price_used_usdc: price,
-    deposit_ata: depo,
-    ts: Number(tx?.blockTime ? tx.blockTime*1000 : Date.now())
-  });
-
-  // Totals neu berechnen
-  const totRaw  = claim.txs.reduce((s,t)=> s + BigInt(t.usdc_raw), 0n);
-  const totInpi = claim.txs.reduce((s,t)=> s + Number(t.inpi||0), 0);
-
-  claim.total_usdc_raw = totRaw.toString();
-  claim.total_usdc     = Number(totRaw) / 1e6;
-  claim.total_inpi     = totInpi;
-
-  await saveClaim(env, wallet, claim);
-
-  return J({
-    ok: true,
-    wallet,
-    signature,
-    deposit_ata: depo,
-    price_used_usdc: price,
-    usdc: Number(deltaDepositRaw) / 1e6,
-    inpi: inpiFinal,
-    totals: { total_usdc: claim.total_usdc, total_inpi: claim.total_inpi },
-    updated_at: Date.now()
-  });
-}
-
-function findTokenBalanceIndex(arr, accountAddr, mint, keyAt) {
-  for (let i=0;i<arr.length;i++){
-    const it = arr[i];
-    const acc = keyAt(it.accountIndex ?? -1);
-    if (acc === accountAddr && it.mint === mint) return i;
-  }
-  return -1;
-}
-
-function ownerDeltaUSDC(pre, post, owner, mint) {
-  // Summe (post-pre) aller USDC-Tokenaccounts mit owner == wallet
-  const preMap = new Map();
-  for (const it of pre) {
-    if (it.mint !== mint) continue;
-    if (it.owner !== owner) continue;
-    preMap.set(it.accountIndex, BigInt(it?.uiTokenAmount?.amount || "0"));
-  }
-  let delta = 0n;
-  for (const it of post) {
-    if (it.mint !== mint) continue;
-    if (it.owner !== owner) continue;
-    const preAmt = preMap.get(it.accountIndex) ?? 0n;
-    const postAmt = BigInt(it?.uiTokenAmount?.amount || "0");
-    delta += (postAmt - preAmt);
-    preMap.delete(it.accountIndex);
-  }
-  // Accounts, die nur in pre existierten
-  for (const [,preAmt] of preMap) delta += (0n - preAmt);
-  return delta; // sollte negativ sein
-}
-
-function priceToScaledInt(s, scale) {
-  // "0.00031415" → 31415 (bei scale=1e8)
-  const [a,b=""] = String(s).split(".");
-  const pad = Math.log10(scale)|0;
-  const frac = (b + "0".repeat(pad)).slice(0, pad);
-  const cleaned = `${(a||"0").replace(/\D/g,"")}${frac.replace(/\D/g,"")}`.replace(/^0+/,"") || "0";
-  return BigInt(cleaned);
-}
-
-async function loadClaim(env, wallet) {
-  const k = `claim:${wallet}`;
-  try {
-    const txt = await env.INPI_CLAIMS.get(k);
-    return txt ? JSON.parse(txt) : { wallet, total_usdc_raw:"0", total_usdc:0, total_inpi:0, txs:[] };
-  } catch {
-    return { wallet, total_usdc_raw:"0", total_usdc:0, total_inpi:0, txs:[] };
-  }
-}
-async function saveClaim(env, wallet, obj) {
-  const k = `claim:${wallet}`;
-  await env.INPI_CLAIMS.put(k, JSON.stringify(obj), {
-    expirationTtl: 60*60*24*365*5 // 5 Jahre
-  });
+function round6(x){ return Math.round(Number(x||0)*1e6)/1e6; }
+function numFrom(amountStr, decimals){
+  const a = BigInt(amountStr || "0");
+  const d = Number(decimals || 0);
+  const den = 10n ** BigInt(d);
+  return Number(a) / Number(den);
 }
