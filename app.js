@@ -11,8 +11,8 @@ const CFG = {
   API_BASE: "https://inpinity.online/api/token",
 
   // Standard-Preise (werden durch /status übersteuert, falls gesetzt)
-  PRICE_WITH_NFT: 0.003141,
-  PRICE_WITHOUT_NFT: 0.03141,
+  PRICE_WITH_NFT: 0.0003141,
+  PRICE_WITHOUT_NFT: 0.003141,
 
   DEPOSIT_USDC_ATA_FALLBACK: "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
   TGE_TS_FALLBACK: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 90
