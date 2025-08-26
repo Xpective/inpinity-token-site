@@ -7,22 +7,18 @@
 const CFG = {
   RPC: "https://inpinity.online/rpc",
   INPI_MINT: "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
-  // ⚠️ kanonisch, final:
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC4wEGGkZwyTDt1v",
   API_BASE: "https://inpinity.online/api/token",
 
-  // Fallback-Preise falls Server nichts liefert:
   PRICE_WITH_NFT: 0.003141,
   PRICE_WITHOUT_NFT: 0.03141,
 
-  // Fallbacks
   DEPOSIT_USDC_ATA_FALLBACK: "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
   TGE_TS_FALLBACK: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 90
 };
 
 /* ================ SOLANA / PHANTOM ================ */
 const { Connection } = solanaWeb3;
-
 const $ = (sel) => document.querySelector(sel);
 const short = (a) => (a?.slice(0, 4) + "…" + a?.slice(-4));
 function fmt(n, d = 2) { if (n == null || isNaN(n)) return "–"; return Number(n).toLocaleString("de-DE",{maximumFractionDigits:d}); }
@@ -52,7 +48,7 @@ const btnPhantom = $("#btn-phantom");
 const btnSolflare = $("#btn-solflare");
 const btnSolpay = $("#btn-solpay");
 
-// EARLY CLAIM UI
+// EARLY CLAIM UI ($1 Fee)
 const earlyBox = $("#earlyBox");
 const btnEarly = $("#btnEarlyClaim");
 const earlyArea = $("#earlyArea");
@@ -65,7 +61,6 @@ const earlyExpect = $("#earlyExpected");
 const earlySig = $("#earlySig");
 const btnEarlyConfirm = $("#btnEarlyConfirm");
 
-// Optional: kleines Badge neben Preis (wird dynamisch angelegt, falls nicht vorhanden)
 let gateBadge = document.getElementById("gateBadge");
 if (!gateBadge && p0 && p0.parentElement) {
   gateBadge = document.createElement("span");
@@ -89,31 +84,31 @@ const STATE = {
 
   presale_state: "pre",
   tge_ts: null,
-  deposit_owner: null,   // NEU (Owner-Pubkey)
-  deposit_ata: null,     // ATA nur für Anzeige/Balance-Check
+  deposit_owner: null,
+  deposit_ata: null,
 
   presale_min_usdc: null,
   presale_max_usdc: null,
 
-  // Preise
   price_with_nft_usdc: CFG.PRICE_WITH_NFT,
   price_without_nft_usdc: CFG.PRICE_WITHOUT_NFT,
 
-  // Gate (vom Server)
   gate_ok: false,
 
-  // Early-Claim Config
-  early: { enabled:false, flat_usdc:1, fee_dest_wallet:null }
+  // Early-Claim ($1 USDC Fee)
+  early: { enabled:false, flat_usdc:1, fee_dest_wallet:null },
+
+  // Claimbar
+  claimable_inpi: 0
 };
 
 /* ---------- Preis/Erwartung ---------- */
 function currentPriceUSDC() {
-  // aktiver Preis abhängig vom Gate
   return STATE.gate_ok ? STATE.price_with_nft_usdc : STATE.price_without_nft_usdc;
 }
 function calcExpectedInpi(usdc) {
   if (!usdc || usdc <= 0) return "–";
-  const price = currentPriceUSDC();   // USDC pro 1 INPI
+  const price = currentPriceUSDC();
   const tokens = usdc / price;
   return fmt(tokens, 0) + " INPI";
 }
@@ -124,9 +119,7 @@ function updatePriceRow() {
   const active = currentPriceUSDC();
   const badge = STATE.gate_ok ? "NFT ✓" : "NFT ✗";
   p0.textContent = `mit NFT: ${Number(w).toFixed(6)} USDC • ohne NFT: ${Number(wo).toFixed(6)} USDC • dein aktiv: ${Number(active).toFixed(6)} USDC`;
-  if (gateBadge) {
-    gateBadge.textContent = `(${badge})`;
-  }
+  if (gateBadge) gateBadge.textContent = `(${badge})`;
 }
 
 /* ==================== INIT ==================== */
@@ -141,7 +134,6 @@ async function init() {
 
   updatePriceRow();
 
-  // Min/Max vom Server auf Input setzen
   if (STATE.presale_min_usdc != null) inpAmount.min = String(STATE.presale_min_usdc);
   if (STATE.presale_max_usdc != null) inpAmount.max = String(STATE.presale_max_usdc);
 
@@ -167,10 +159,8 @@ async function init() {
   tickTGE();
   setInterval(tickTGE, 1000);
 
-  // Erwartung initial
   expectedInpi.textContent = calcExpectedInpi(Number(inpAmount.value || "0"));
 
-  // Early-UI
   earlyBox.style.display = STATE.early.enabled ? "block" : "none";
   btnEarly.onclick = startEarlyFlow;
   btnEarlyConfirm.onclick = confirmEarlyFee;
@@ -187,28 +177,26 @@ async function refreshStatus(){
     STATE.usdc_mint     = j?.usdc_mint || CFG.USDC_MINT;
 
     STATE.presale_state = j?.presale_state || "pre";
-    STATE.tge_ts        = j?.tge_ts || CFG.TGE_TS_FALLBACK; // Sekunden!
+    STATE.tge_ts        = j?.tge_ts || CFG.TGE_TS_FALLBACK;
     STATE.deposit_owner = j?.deposit_usdc_owner || null;
     STATE.deposit_ata   = j?.deposit_usdc_ata || CFG.DEPOSIT_USDC_ATA_FALLBACK;
 
     STATE.presale_min_usdc = j?.presale_min_usdc ?? null;
     STATE.presale_max_usdc = j?.presale_max_usdc ?? null;
 
-    // Preise vom Server (mit/ohne NFT), sonst Fallbacks
     const w = Number(j?.price_with_nft_usdc);
     const wo = Number(j?.price_without_nft_usdc);
     STATE.price_with_nft_usdc = Number.isFinite(w) && w > 0 ? w : CFG.PRICE_WITH_NFT;
     STATE.price_without_nft_usdc = Number.isFinite(wo) && wo > 0 ? wo : CFG.PRICE_WITHOUT_NFT;
 
-    // Early
+    // Early aus status.legacy/neu
     const ec = j?.early_claim || {};
     STATE.early.enabled = !!ec.enabled;
     STATE.early.flat_usdc = Number(ec.flat_usdc || 1);
-    STATE.early.fee_dest_wallet = ec.fee_dest_wallet || null;
+    STATE.early.fee_dest_wallet = ec.fee_dest_wallet || STATE.deposit_ata || null;
 
     presaleState.textContent = STATE.presale_state;
     updatePriceRow();
-
   } catch (e) {
     console.error(e);
 
@@ -225,7 +213,6 @@ async function refreshStatus(){
     updatePriceRow();
   }
 
-  // UI aktualisieren
   if (depositAddrEl) {
     depositAddrEl.textContent = STATE.deposit_ata || "—";
     if (depositSolscanA && STATE.deposit_ata) {
@@ -234,6 +221,21 @@ async function refreshStatus(){
     } else if (depositSolscanA) depositSolscanA.style.display = "none";
   }
   earlyBox.style.display = STATE.early.enabled ? "block" : "none";
+}
+
+/* ---------- Claim-Status (claimbar) ---------- */
+async function refreshClaimStatus(){
+  if (!pubkey) return;
+  try{
+    const st = await fetch(`${CFG.API_BASE}/claim/status?wallet=${pubkey.toBase58()}`).then(r=>r.json());
+    const pending = Number(st?.pending_inpi || 0);
+    STATE.claimable_inpi = pending;
+    earlyExpect.textContent = fmt(pending, 0) + " INPI";
+  }catch(e){
+    console.error(e);
+    STATE.claimable_inpi = 0;
+    earlyExpect.textContent = "–";
+  }
 }
 
 function tickTGE(){
@@ -251,8 +253,9 @@ function onConnected(publicKey){
   provider?.on?.("disconnect", onDisconnected);
 
   refreshBalances().catch(()=>{});
+  refreshClaimStatus().catch(()=>{});
   clearInterval(POLL);
-  POLL = setInterval(refreshBalances, 30000);
+  POLL = setInterval(() => { refreshBalances(); refreshClaimStatus(); }, 30000);
 }
 function onDisconnected(){
   pubkey = null;
@@ -260,6 +263,8 @@ function onDisconnected(){
   usdcBal.textContent = "—";
   inpiBal.textContent = "—";
   STATE.gate_ok = false;
+  STATE.claimable_inpi = 0;
+  earlyExpect.textContent = "–";
   updatePriceRow();
   clearInterval(POLL);
 }
@@ -276,9 +281,7 @@ btnHowTo.addEventListener("click", () => {
 1) Phantom verbinden
 2) Intent senden (wir prüfen Cap & registrieren dich)
 3) USDC mit Solana Pay (QR/Buttons) an die Deposit-Adresse senden
-4) Nach TGE claimst du deine INPI (oder Early-Claim mit 1 USDC Fee)
-
-Hinweis: Mit INPI-NFT gilt der günstigere Preis.`
+4) Early-Claim: $1 USDC Fee zahlen → INPI werden gutgeschrieben (oder später normal claimen).`
   );
 });
 
@@ -290,7 +293,6 @@ btnPresaleIntent.addEventListener("click", async () => {
   const usdc = Number(inpAmount.value || "0");
   if (!usdc || usdc <= 0) return alert("Bitte gültigen USDC-Betrag eingeben.");
 
-  // Min/Max local check
   if (STATE.presale_min_usdc != null && usdc < STATE.presale_min_usdc) {
     return alert(`Mindestens ${STATE.presale_min_usdc} USDC.`);
   }
@@ -301,7 +303,6 @@ btnPresaleIntent.addEventListener("click", async () => {
   inFlight = true;
   intentMsg.textContent = "Prüfe Caps & registriere Intent …";
   try {
-    // optionale Nachricht signieren
     let sig_b58 = null, msg_str = null;
     if (provider.signMessage) {
       msg_str = `INPI Presale Intent\nwallet=${pubkey.toBase58()}\namount_usdc=${usdc}\nts=${Date.now()}`;
@@ -335,14 +336,8 @@ btnPresaleIntent.addEventListener("click", async () => {
       };
     }
 
-    // Ergebnisbereich sichtbar machen (Presale)
     payArea.style.display = "block";
-
-    // QR + Links
-    if (j.qr_url) {
-      qrImg.src = j.qr_url;
-      qrImg.style.display = "block";
-    }
+    if (j.qr_url) { qrImg.src = j.qr_url; qrImg.style.display = "block"; }
     if (j.phantom_universal_url) { btnPhantom.href = j.phantom_universal_url; btnPhantom.style.pointerEvents = "auto"; }
     if (j.solflare_universal_url){ btnSolflare.href = j.solflare_universal_url; btnSolflare.style.pointerEvents = "auto"; }
     if (j.solana_pay_url) {
@@ -351,13 +346,12 @@ btnPresaleIntent.addEventListener("click", async () => {
       btnSolpay.style.pointerEvents = "auto";
     }
 
-    // Textinfo/Copy
     intentMsg.textContent = "";
     const p = document.createElement("p");
     p.textContent = `✅ Intent registriert. Bitte ${usdc} USDC mit Solana Pay senden.`;
     intentMsg.appendChild(p);
 
-    await refreshStatus(); // falls Preise/Phase live geändert
+    await refreshStatus();
   } catch (e) {
     console.error(e);
     alert(`Intent fehlgeschlagen:\n${e?.message || e}`);
@@ -366,22 +360,19 @@ btnPresaleIntent.addEventListener("click", async () => {
   }
 });
 
-/* ---------- EARLY CLAIM Flow ---------- */
+/* ---------- EARLY CLAIM ($1 Fee) ---------- */
 async function startEarlyFlow(){
   if (!pubkey) return alert("Bitte zuerst mit Phantom verbinden.");
   if (!STATE.early.enabled) return alert("Early-Claim ist aktuell deaktiviert.");
 
+  await refreshClaimStatus();
+  const pending = Number(STATE.claimable_inpi || 0);
+  if (!pending) return alert("Kein vorgekaufter INPI-Betrag zum Early-Claim gefunden.");
+
+  earlyExpect.textContent = fmt(pending, 0) + " INPI";
+
   try {
-    // Status deines Claims laden (wie viel INPI vorgemerkt?)
-    const st = await fetch(`${CFG.API_BASE}/claim/status?wallet=${pubkey.toBase58()}`).then(r=>r.json());
-    const total = Number(st?.total_inpi || 0);
-    const sent  = Number(st?.early_inpi_sent || 0);
-    const pending = Math.max(0, total - sent);
-    if (!pending) return alert("Kein vorgekaufter INPI-Betrag zum Early-Claim gefunden.");
-
-    earlyExpect.textContent = fmt(pending, 0) + " INPI";
-
-    // Early-Intent erzeugen (Fee-QR → FuFV…)
+    // Hole QR/Links vom Server (Fee-Ziel + 1 USDC)
     const r = await fetch(`${CFG.API_BASE}/claim/early-intent`, {
       method:"POST",
       headers:{ "content-type":"application/json", "accept":"application/json" },
@@ -390,7 +381,6 @@ async function startEarlyFlow(){
     const j = await r.json();
     if (!r.ok || !j?.ok) throw new Error(j?.error || "early_intent_failed");
 
-    // UI zeigen
     earlyArea.style.display = "block";
     if (j.qr_url) { earlyQR.src = j.qr_url; earlyQR.style.display = "block"; }
     if (j.phantom_universal_url) { btnPhantomEarly.href = j.phantom_universal_url; btnPhantomEarly.style.pointerEvents = "auto"; }
@@ -401,15 +391,14 @@ async function startEarlyFlow(){
       btnSolpayEarly.style.pointerEvents = "auto";
     }
 
-    earlyMsg.textContent = `Zahle jetzt ${STATE.early.flat_usdc} USDC (Fee) von deinem Wallet. Auszahlung erfolgt aus dem Wallet ${short(j.dest_wallet)} nach Erkennung der Zahlung.`;
-
+    earlyMsg.textContent = `Zahle jetzt ${STATE.early.flat_usdc} USDC (Fee). Nach Bestätigung schreiben wir dir ${fmt(pending,0)} INPI gut.`;
   } catch (e) {
     console.error(e);
     alert(`Early-Claim fehlgeschlagen:\n${e?.message || e}`);
   }
 }
 
-// Optional: manuelle Bestätigung per Fee-Tx-Signatur (hilft OPS)
+// Fee-Tx-Signatur bestätigen → Worker prüft & queued Claim
 async function confirmEarlyFee(){
   const sig = (earlySig.value || "").trim();
   if (!pubkey) return alert("Bitte zuerst mit Phantom verbinden.");
@@ -423,14 +412,17 @@ async function confirmEarlyFee(){
     });
     const j = await r.json();
     if (!r.ok || !j?.ok) throw new Error(j?.error || "confirm_failed");
-    alert("Danke! Fee bestätigt. Die INPI werden aus dem Auszahlungswallet gesendet, sobald die Zahlung final erkannt ist.");
+
+    alert("Danke! Fee bestätigt. Dein Early-Claim wurde eingereiht.");
+    earlySig.value = "";
+    await refreshClaimStatus();
   }catch(e){
     console.error(e);
     alert(`Bestätigung fehlgeschlagen:\n${e?.message || e}`);
   }
 }
 
-/* ---------- Wallet-Balances über API (inkl. Gate) ---------- */
+/* ---------- Wallet-Balances ---------- */
 async function refreshBalances() {
   if (!pubkey) return;
   try {
