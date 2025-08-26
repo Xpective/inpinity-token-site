@@ -19,6 +19,11 @@
   --space:         16px;
   --shadow:        0 10px 30px rgba(0,0,0,.25);
   --font:          system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell;
+
+  /* Neu: Akzentfarben (lila / cyan / schwarz) */
+  --accent-purple: #8b5cf6;
+  --accent-cyan:   #06b6d4;
+  --accent-ink:    #03060a;
 }
 
 @media (prefers-color-scheme: light){
@@ -30,6 +35,9 @@
     --line:      #e7ebf2;
     --primary:   #1d64ff;
     --primary-ink:#f0f5ff;
+
+    /* Akzent bleibt satt, nur Textkontrast leicht anheben */
+    --accent-ink: #00131a;
   }
 }
 
@@ -103,12 +111,12 @@ input{
 }
 input:focus-visible{ border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 25%, transparent); }
 
-/* ----- Buttons ----- */
+/* ----- Buttons (Basis) ----- */
 button{
   appearance: none; border:0; cursor: pointer;
   padding: 10px 14px; border-radius: 12px;
   background: var(--primary); color: white; font-weight: 600;
-  transition: transform .06s ease, opacity .2s ease;
+  transition: transform .06s ease, opacity .2s ease, box-shadow .2s ease, filter .2s ease;
 }
 button.secondary{
   background: transparent; color: var(--text);
@@ -121,6 +129,22 @@ button:focus-visible{
   outline-offset: 2px;
 }
 
+/* ----- NEU: Akzent-Button (lila → cyan) ----- */
+button.btn-accent{
+  background: linear-gradient(135deg, var(--accent-purple), var(--accent-cyan));
+  color: var(--accent-ink);
+  border: 0;
+  box-shadow: 0 6px 18px rgba(3, 6, 10, .35);
+}
+button.btn-accent:hover{
+  filter: brightness(1.05);
+}
+button.btn-accent:focus-visible{
+  outline: 3px solid color-mix(in oklab, var(--accent-cyan) 60%, transparent);
+  outline-offset: 2px;
+}
+
+/* ----- Callouts ----- */
 .callout{ border:1px solid var(--line); padding:12px 14px; border-radius:12px; }
 .callout.ok{ border-color: color-mix(in oklab, var(--ok) 60%, var(--line)); }
 .callout.err{ border-color: color-mix(in oklab, var(--error) 60%, var(--line)); }
