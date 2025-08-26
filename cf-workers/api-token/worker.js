@@ -7,6 +7,16 @@
 //   wait_bonus_bps, early_fee_usdc_ata
 //   ZUSATZ (für Preis-Tiers): tier_nft_price_usdc, tier_public_price_usdc, public_mint_price_usdc
 //   GATE via KV: nft_gate_enabled ("true"/"false"), gate_collection, gate_mint  (ENV > KV)
+//   Distribution: supply_total, dist_*_bps (presale, dex_liquidity, staking, ecosystem, treasury, team, airdrop_nft, buyback_reserve)
+//   Misc/Public-Mint: public_mint_enabled, public_mint_fee_bps, public_mint_fee_dest
+//   Quoten/Overflow: sale_nft_quota_bps, sale_public_quota_bps, sale_overflow_action
+//
+// Änderungen (Feinschliff):
+// - /api/token/status liefert jetzt: supply_total, dist_*_bps + berechnete INPI-Buckets, Quoten/Overflow, Public-Mint-Flags,
+//   presale_target_usdc, "tiers"-Block, sowie gate-Infos und RPC-Diagnose.
+// - Neues Endpoint /api/token/allocations (GET): saubere Aufschlüsselung in Zahlen (INPI) & Prozenten (bps) für das Frontend.
+// - Gate-Check unterstützt Collections (inkl. Child-Asset-ID) und Mint-Gate; ENV hat Vorrang vor KV. Bei nicht-DAS-RPC -> fail-open.
+// - Claim-/Early-Claim Logik unverändert, aber Status-/Quote-Ausgaben erweitert.
 
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC4wEGGkZwyTDt1v";
 const QR_SVC    = "https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=";
@@ -28,7 +38,7 @@ export default {
         const cfg     = await readPublicConfig(env);
         const rpc_url = await getPublicRpcUrl(env);
         const early   = await getEarlyConfig(env);
-        const gate    = await getGateSetup(env); // neu
+        const gate    = await getGateSetup(env);
 
         // Deposit + Owner (für Solana Pay als "to" prefer Owner)
         const depoAta = cfg.presale_deposit_usdc || "";
@@ -55,20 +65,51 @@ export default {
           toNumOrNull(cfg.public_price_usdc) ??
           null;
 
+        // Distribution berechnen (falls supply_total gesetzt)
+        const supply_total = toNumOrNull(cfg.supply_total);
+        const dist = collectDist(cfg);
+        const dist_calc = supply_total
+          ? Object.fromEntries(Object.entries(dist).map(([k, bps]) => [k.replace(/^dist_/, "") + "_inpi", Math.floor(supply_total * bps / 10000)]))
+          : {};
+
+        const rpc_diag = {
+          url: rpc_url,
+          kind: (rpc_url || "").includes("helius") ? "helius" : "generic",
+          das_supported: (rpc_url || "").includes("helius")
+        };
+
         return J({
           rpc_url,
+          rpc_diag,
+
           usdc_mint: USDC_MINT,
           inpi_mint: cfg.INPI_MINT || "",
+
           presale_state: cfg.presale_state || "pre",
           tge_ts: cfg.tge_ts,
 
           // klassische Felder
           presale_price_usdc: toNumOrNull(cfg.presale_price_usdc),
           public_price_usdc:  toNumOrNull(cfg.public_price_usdc),
+          presale_target_usdc: toNumOrNull(cfg.presale_target_usdc),
 
-          // neue Tier-Preise
+          // neue Tier-Preise + Tiers Zusammenfassung
           price_with_nft_usdc:  priceWith,
           price_without_nft_usdc: priceWithout,
+          tiers: {
+            with_nft: priceWith,
+            without_nft: priceWithout ?? priceWith
+          },
+
+          // Quoten/Overflow
+          sale_nft_quota_bps:   toNumOrNull(cfg.sale_nft_quota_bps),
+          sale_public_quota_bps: toNumOrNull(cfg.sale_public_quota_bps),
+          sale_overflow_action: cfg.sale_overflow_action || null,
+
+          // Public Mint
+          public_mint_enabled: String(cfg.public_mint_enabled || "false").toLowerCase() === "true",
+          public_mint_fee_bps: toNumOrNull(cfg.public_mint_fee_bps),
+          public_mint_fee_dest: cfg.public_mint_fee_dest || null,
 
           // Deposit
           deposit_usdc_ata:   depoAta,
@@ -93,6 +134,50 @@ export default {
           early_claim_fee_bps: early.fee_bps,
           wait_bonus_bps: early.bonus_bps,
 
+          // Distribution / Meta
+          supply_total,
+          ...dist,           // dist_*_bps
+          ...dist_calc,      // *_inpi
+          governance_multisig: cfg.governance_multisig || null,
+          timelock_seconds: toNumOrNull(cfg.timelock_seconds),
+          project_uri: cfg.project_uri || null,
+          whitepaper_sha256: cfg.whitepaper_sha256 || null,
+
+          updated_at: Date.now()
+        });
+      }
+
+      // ---- ALLOCATIONS (public) – saubere Aufschlüsselung
+      if (req.method === "GET" && p === "/api/token/allocations") {
+        const cfg = await readPublicConfig(env);
+        const supply_total = toNumOrNull(cfg.supply_total) || 0;
+        const dist = collectDist(cfg);
+
+        const rows = Object.entries(dist).map(([k, bps]) => ({
+          bucket: k.replace(/^dist_/, ""),
+          bps,
+          pct: bps / 100,
+          inpi: Math.floor(supply_total * bps / 10000)
+        }));
+
+        const presaleRow = rows.find(r => r.bucket === "presale");
+        const presale_supply_inpi = presaleRow ? presaleRow.inpi : 0;
+
+        return J({
+          ok: true,
+          supply_total,
+          dist_bps: dist,
+          rows,
+          presale_supply_inpi,
+          quotas: {
+            sale_nft_quota_bps: toNumOrNull(cfg.sale_nft_quota_bps),
+            sale_public_quota_bps: toNumOrNull(cfg.sale_public_quota_bps),
+            sale_overflow_action: cfg.sale_overflow_action || null
+          },
+          meta: {
+            governance_multisig: cfg.governance_multisig || null,
+            timelock_seconds: toNumOrNull(cfg.timelock_seconds) || null
+          },
           updated_at: Date.now()
         });
       }
@@ -586,7 +671,7 @@ async function readGateConfig(env) {
 }
 
 async function passesAnyGate(env, owner, collectionList, mintList) {
-  // Wenn Listen (Komma), reicht ein Treffer
+  // Listen (Komma) -> ein Treffer reicht
   const collections = (collectionList || "").split(",").map(s=>s.trim()).filter(Boolean);
   const mints       = (mintList || "").split(",").map(s=>s.trim()).filter(Boolean);
 
@@ -614,7 +699,7 @@ async function passesMintGate(env, owner, gateMint) {
       if (amt > 0) return true;
     }
     return false;
-  } catch { return true; } // Fail-open
+  } catch { return true; } // Fail-open wenn RPC die Query nicht kann
 }
 
 // Collection-Gate via Helius DAS (compressed & uncompressed)
@@ -625,7 +710,6 @@ async function passesCollectionGateOrChild(env, owner, target) {
     const rpc = await getPublicRpcUrl(env);
 
     // 1) Fast-Path: target als Asset-ID/Mint prüfen (getAsset)
-    //    -> wenn Besitzer = owner, ist Gate erfüllt.
     try {
       const r1 = await fetch(rpc, {
         method: "POST",
@@ -640,17 +724,12 @@ async function passesCollectionGateOrChild(env, owner, target) {
       const assetOwner = asset?.ownership?.owner || asset?.ownership?.ownerAddress || asset?.ownership?.owner?.address;
       if (isAddress(assetOwner) && String(assetOwner) === String(owner)) return true;
 
-      // Falls target eigentlich eine Collection-ID ist, prüfe, ob das Asset zu dieser Collection gehört (dann gleich noch ein Besitzercheck)
-      const assetCollection = (asset?.grouping || asset?.groups || []).find(g => g?.group_key === "collection")?.group_value;
-      if (assetCollection && String(assetCollection) === String(target)) {
-        // owner hält dieses asset? (oben schon geprüft; wenn nicht, weiter unten globaler Scan)
-      }
-    } catch { /* still ok */ }
+      // Falls target eine Collection-ID ist, merken – der Owner-Scan unten findet dann passende Items
+    } catch { /* ok */ }
 
     // 2) Owner-Scan: getAssetsByOwner — suche entweder:
     //    a) Ein Asset mit id == target (Child-NFT) ODER
     //    b) Ein Asset mit grouping.collection == target (Collection-Gate)
-    //    Paging begrenzt (max ~1500 Items) für Workers-CPU
     let page = 1;
     const LIMIT = 500;
     for (let round = 0; round < 3; round++) {
@@ -684,7 +763,7 @@ async function passesCollectionGateOrChild(env, owner, target) {
     }
     return false;
   } catch {
-    return true; // Fail-open
+    return true; // Fail-open wenn kein DAS verfügbar
   }
 }
 
@@ -751,11 +830,19 @@ async function readPublicConfig(env) {
   const keys = [
     "INPI_MINT","presale_state","tge_ts","presale_price_usdc","public_price_usdc",
     "presale_deposit_usdc","cap_per_wallet_usdc","public_rpc_url",
-    "early_fee_usdc_ata",
+    "early_fee_usdc_ata","presale_target_usdc",
     // Preis-Tiers & Mint
     "tier_nft_price_usdc","tier_public_price_usdc","public_mint_price_usdc",
-    // Gate Keys (nur Anzeige/Debug; Enforcement via getGateSetup)
-    "nft_gate_enabled","gate_collection","nft_gate_collection","gate_mint"
+    // Gate Keys
+    "nft_gate_enabled","gate_collection","nft_gate_collection","gate_mint",
+    // Public Mint
+    "public_mint_enabled","public_mint_fee_bps","public_mint_fee_dest",
+    // Quoten / Overflow
+    "sale_nft_quota_bps","sale_public_quota_bps","sale_overflow_action",
+    // Distribution / Meta
+    "supply_total","governance_multisig","timelock_seconds","project_uri","whitepaper_sha256",
+    "dist_presale_bps","dist_dex_liquidity_bps","dist_staking_bps","dist_ecosystem_bps",
+    "dist_treasury_bps","dist_team_bps","dist_airdrop_nft_bps","dist_buyback_reserve_bps"
   ];
   const out = {};
   await Promise.all(keys.map(async (k) => (out[k] = await env.CONFIG.get(k))));
@@ -848,6 +935,20 @@ function numFrom(amountStr, decimals){
   const d = Number(decimals || 0);
   const den = 10n ** BigInt(d);
   return Number(a) / Number(den);
+}
+
+/* ---------- Distribution Helfer ---------- */
+function collectDist(cfg){
+  return {
+    dist_presale_bps:           Math.max(0, toNumOrNull(cfg.dist_presale_bps)           || 0),
+    dist_dex_liquidity_bps:     Math.max(0, toNumOrNull(cfg.dist_dex_liquidity_bps)     || 0),
+    dist_staking_bps:           Math.max(0, toNumOrNull(cfg.dist_staking_bps)           || 0),
+    dist_ecosystem_bps:         Math.max(0, toNumOrNull(cfg.dist_ecosystem_bps)         || 0),
+    dist_treasury_bps:          Math.max(0, toNumOrNull(cfg.dist_treasury_bps)          || 0),
+    dist_team_bps:              Math.max(0, toNumOrNull(cfg.dist_team_bps)              || 0),
+    dist_airdrop_nft_bps:       Math.max(0, toNumOrNull(cfg.dist_airdrop_nft_bps)       || 0),
+    dist_buyback_reserve_bps:   Math.max(0, toNumOrNull(cfg.dist_buyback_reserve_bps)   || 0)
+  };
 }
 
 /* ---------- Preiswahl: mit/ohne NFT ---------- */
