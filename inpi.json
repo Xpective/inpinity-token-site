@@ -1,6 +1,6 @@
 {
   "name": "Inpinity Token",
-  "symbol": "inpi",
+  "symbol": "INPI",
   "description": "Offizielles Zahlungsmittel des Inpinity-Ökosystems auf Solana. π-Supply (3,141,592,653), 9 Decimals. Presale in USDC, Startpool INPI/USDC, LP-Lock, Staking (7%), Eco-Reserve (4Y Cliff → 4Y linear).",
   "image": "https://inpinity.online/token/inpi.png",
   "external_url": "https://inpinity.online/token",
@@ -15,11 +15,11 @@
     "contact": "info@inpinity.online"
   },
   "chainId": 101,
-  "mintAddress": "<DEIN_INPI_MINT>",
+  "mintAddress": "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
   "decimals": 9,
   "lp": {
     "primaryPair": "INPI/USDC",
-    "initialPriceUSDC": "0.0001",
+    "initialPriceUSDC": "0.00031415",
     "lpLock": "9m"
   },
   "supply": {
@@ -30,5 +30,5 @@
   "legal": {
     "disclaimer": "Kein Wertpapier; reiner Utility-Token im Inpinity-Ökosystem."
   },
-  "version": "1.0.0"
+  "version": "1.0.1"
 }

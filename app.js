@@ -246,11 +246,27 @@ btnPresaleIntent.addEventListener("click", async () => {
       headers: { "content-type": "application/json", "accept":"application/json" },
       body: JSON.stringify({ wallet: pubkey.toBase58(), amount_usdc: usdc, sig_b58, msg_str })
     });
-    if (!r.ok) {
-      const t = await r.text();
-      throw new Error(t || "Intent fehlgeschlagen");
+
+    // --- robust: erst Text lesen, dann JSON versuchen ---
+    const raw = await r.text();
+    if (!r.ok) throw new Error(raw || "Intent fehlgeschlagen");
+
+    let j = null;
+    try { j = JSON.parse(raw); } catch {}
+
+    // Fallback: Server hat Text-Antwort → Solana-Pay-Link extrahieren
+    if (!j) {
+      const m = raw.match(/solana:[^\s]+/i);
+      const sp = m ? m[0] : null;
+      j = {
+        ok: true,
+        deposit_usdc_ata: STATE.deposit_ata,
+        solana_pay_url: sp,
+        phantom_universal_url: sp ? `https://phantom.app/ul/v1/solana-pay?link=${encodeURIComponent(sp)}` : null,
+        solflare_universal_url: sp ? `https://solflare.com/ul/v1/solana-pay?link=${encodeURIComponent(sp)}` : null,
+        qr_url: sp ? `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(sp)}` : null
+      };
     }
-    const j = await r.json();
 
     // Ergebnisbereich sichtbar machen
     payArea.style.display = "block";
@@ -260,11 +276,12 @@ btnPresaleIntent.addEventListener("click", async () => {
       qrImg.src = j.qr_url;
       qrImg.style.display = "block";
     }
-    if (j.phantom_universal_url) btnPhantom.href = j.phantom_universal_url;
-    if (j.solflare_universal_url) btnSolflare.href = j.solflare_universal_url;
+    if (j.phantom_universal_url) { btnPhantom.href = j.phantom_universal_url; btnPhantom.style.pointerEvents = "auto"; }
+    if (j.solflare_universal_url){ btnSolflare.href = j.solflare_universal_url; btnSolflare.style.pointerEvents = "auto"; }
     if (j.solana_pay_url) {
       btnSolpay.href = j.solana_pay_url;
       btnSolpay.onclick = () => { window.location.href = j.solana_pay_url; };
+      btnSolpay.style.pointerEvents = "auto";
     }
 
     // Textinfo/Copy
