@@ -28,19 +28,21 @@ export default {
         const rpc_url = await getPublicRpcUrl(env);
         const early   = await getEarlyConfig(env);
 
+        // Deposit + Owner (für Solana Pay als "to" prefer Owner)
         const depoAta = cfg.presale_deposit_usdc || "";
         let depoOwner = "";
         if (isAddress(depoAta)) {
           try { depoOwner = await getTokenAccountOwner(rpc_url, depoAta) || ""; } catch {}
         }
 
+        // Early Fee Ziel (eigene ATA optional)
         const feeAta = cfg.early_fee_usdc_ata || cfg.presale_deposit_usdc || "";
         let feeOwner = "";
         if (isAddress(feeAta)) {
           try { feeOwner = await getTokenAccountOwner(rpc_url, feeAta) || ""; } catch {}
         }
 
-        // Preis-Tiers: bevorzugt tier_* Keys; Fallbacks auf public/presale
+        // Tier-Preise bestimmen
         const priceWith =
           toNumOrNull(cfg.tier_nft_price_usdc) ??
           toNumOrNull(cfg.public_mint_price_usdc) ??
@@ -68,7 +70,7 @@ export default {
 
           // Deposit
           deposit_usdc_ata:   depoAta,
-          deposit_usdc_owner: depoOwner || null, // <-- NEU: Owner fürs Frontend
+          deposit_usdc_owner: depoOwner || null,
           cap_per_wallet_usdc: toNumOrNull(cfg.cap_per_wallet_usdc),
           presale_min_usdc: toNumOrNull(env.PRESALE_MIN_USDC),
           presale_max_usdc: toNumOrNull(env.PRESALE_MAX_USDC),
@@ -145,7 +147,7 @@ export default {
         if (minAmt != null && amount < minAmt) return J({ ok:false, error:"below_min", min_usdc:minAmt }, 400);
         if (maxAmt != null && amount > maxAmt) return J({ ok:false, error:"above_max", max_usdc:maxAmt }, 400);
 
-        const cfg = await readPublicConfig(env);
+        const cfg   = await readPublicConfig(env);
         const state = String(cfg.presale_state || "pre");
         if (state !== "pre" && state !== "public") return J({ ok:false, error:"phase_closed", phase: state }, 403);
 
@@ -155,44 +157,61 @@ export default {
         const depoAta = cfg.presale_deposit_usdc || "";
         if (!isAddress(depoAta)) return J({ ok:false, error:"deposit_not_ready" }, 503);
 
-        // Gate durchsetzen (nur wenn gesetzt)
+        // Gate prüfen (und ggf. erzwingen)
         const gateCollection = String(env.GATE_COLLECTION || "").trim();
         const gateMint = String(env.GATE_MINT || "").trim();
+        let gateOk = true;
         if (gateCollection) {
-          const ok = await passesCollectionGate(env, wallet, gateCollection);
-          if (!ok) return J({ ok:false, error:"gate_denied" }, 403);
+          gateOk = await passesCollectionGate(env, wallet, gateCollection);
+          if (!gateOk) return J({ ok:false, error:"gate_denied" }, 403);
         } else if (gateMint) {
-          const ok = await passesMintGate(env, wallet, gateMint);
-          if (!ok) return J({ ok:false, error:"gate_denied" }, 403);
+          gateOk = await passesMintGate(env, wallet, gateMint);
+          if (!gateOk) return J({ ok:false, error:"gate_denied" }, 403);
         }
 
-        // Solana Pay + QR – unbedingt Owner als Empfänger verwenden!
+        // Effektiven Preis je nach Gate wählen
+        const appliedPrice = pickEffectivePrice(cfg, gateOk);
+        const expected_inpi = appliedPrice ? Math.floor(amount / appliedPrice) : null;
+
+        // Solana Pay + QR – Owner bevorzugen
         const rpc = await getPublicRpcUrl(env);
         let depoOwner = await getTokenAccountOwner(rpc, depoAta).catch(()=>null);
-        if (!isAddress(depoOwner)) depoOwner = null; // Fallback nur im Notfall
+        if (!isAddress(depoOwner)) depoOwner = null;
         const sp = makeSolanaPayUrl({
-          to: depoOwner || depoAta, // Owner bevorzugt, zur Not ATA
+          to: depoOwner || depoAta,
           amount, splToken: USDC_MINT,
           label: "Inpinity Presale",
           message: "INPI Presale Contribution"
         });
-        const phantom = `https://phantom.app/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
+        const phantom  = `https://phantom.app/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
         const solflare = `https://solflare.com/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
-        const qr_url = `${QR_SVC}${encodeURIComponent(sp)}`;
+        const qr_url   = `${QR_SVC}${encodeURIComponent(sp)}`;
 
         // Intent speichern (30 Tage TTL)
         const key = `intent:${Date.now()}:${wallet}`;
-        await env.PRESALE.put(key, JSON.stringify({ wallet, amount_usdc:amount, sig_b58, msg_str, ts:Date.now() }),
-                              { expirationTtl: 60*60*24*30 });
+        await env.PRESALE.put(
+          key,
+          JSON.stringify({ wallet, amount_usdc:amount, sig_b58, msg_str, ts:Date.now(), gate_ok:gateOk, applied_price_usdc: appliedPrice }),
+          { expirationTtl: 60*60*24*30 }
+        );
 
-        // Erwartete Zuteilung (nur Info – presale_price_usdc)
-        const price = toNumOrNull(cfg.presale_price_usdc);
-        const expected_inpi = price ? Math.floor(amount / price) : null;
-
-        return J({ ok:true, wallet, amount_usdc:amount, expected_inpi,
-          deposit_usdc_ata:depoAta, usdc_mint:USDC_MINT,
-          solana_pay_url:sp, phantom_universal_url:phantom, solflare_universal_url:solflare,
-          qr_url, label:"INPI Presale", message:"INPI Presale Contribution", updated_at:Date.now() });
+        return J({
+          ok:true,
+          wallet,
+          amount_usdc: amount,
+          expected_inpi,
+          applied_price_usdc: appliedPrice, // <-- Transparenz
+          gate_ok: gateOk,                  // <-- zur UI
+          deposit_usdc_ata: depoAta,
+          usdc_mint: USDC_MINT,
+          solana_pay_url: sp,
+          phantom_universal_url: phantom,
+          solflare_universal_url: solflare,
+          qr_url,
+          label:"INPI Presale",
+          message:"INPI Presale Contribution",
+          updated_at: Date.now()
+        });
       }
 
       // ---- PRESALE RECONCILE (admin, idempotent)
@@ -294,7 +313,7 @@ export default {
         if (!/^[1-9A-HJ-NP-Za-km-z]{43,88}$/.test(String(fee_signature||"")))
           return J({ ok:false, error:"bad_signature" }, 400);
 
-        // Idempotenz: Signatur schon verarbeitet?
+        // Idempotenz
         const usedKey = `early_fee_tx:${fee_signature}`;
         const usedVal = await env.INPI_CLAIMS.get(usedKey);
         if (usedVal) {
@@ -315,7 +334,7 @@ export default {
         if (!tx) return J({ ok:false, error:"tx_not_found" }, 404);
 
         const pre = tx.meta?.preTokenBalances || [];
-        const post = tx.meta?.postTokenBalances || [];
+               post = tx.meta?.postTokenBalances || [];
         const ownerOut = ownerDeltaUSDC(pre, post, wallet);
         const destIn  = accountDeltaUSDC(pre, post, destAta);
 
@@ -488,6 +507,7 @@ async function reconcileOne(req, env) {
 
   if (!tx) return J({ ok:false, error:"tx_not_found" }, 404);
   const meta = tx.meta || {};
+  0
   const pre = meta.preTokenBalances || [];
   const post = meta.postTokenBalances || [];
   const blockTime = tx.blockTime ? (tx.blockTime * 1000) : null;
@@ -549,6 +569,7 @@ async function passesMintGate(env, owner, gateMint) {
   } catch { return true; } // Fail-open
 }
 
+// Collection-Gate via Helius DAS (compressed & uncompressed)
 async function passesCollectionGate(env, owner, collection) {
   try {
     const rpc = await getPublicRpcUrl(env);
@@ -738,6 +759,21 @@ function numFrom(amountStr, decimals){
   const d = Number(decimals || 0);
   const den = 10n ** BigInt(d);
   return Number(a) / Number(den);
+}
+
+/* ---------- Preiswahl: mit/ohne NFT ---------- */
+function pickEffectivePrice(cfg, gateOk) {
+  const withNft =
+    toNumOrNull(cfg.tier_nft_price_usdc) ??
+    toNumOrNull(cfg.public_mint_price_usdc) ??
+    toNumOrNull(cfg.presale_price_usdc);
+
+  const withoutNft =
+    toNumOrNull(cfg.tier_public_price_usdc) ??
+    toNumOrNull(cfg.public_price_usdc) ??
+    null;
+
+  return gateOk ? withNft : (withoutNft ?? withNft);
 }
 
 /* ---------- Token-Account -> Owner ---------- */
