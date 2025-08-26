@@ -761,3 +761,16 @@ function b58decode(s){
   }
   return new Uint8Array(bytes);
 }
+
+/* ---------- Solana Pay URL ---------- */
+function makeSolanaPayUrl({ to, amount, splToken, label, message }) {
+  // amount als string mit max. 6 Nachkommastellen (USDC)
+  const amt = Number(amount || 0);
+  const amountStr = (Math.round(amt * 1e6) / 1e6).toString();
+  const qp = new URLSearchParams();
+  if (amountStr) qp.set("amount", amountStr);
+  if (splToken) qp.set("spl-token", splToken);
+  if (label) qp.set("label", label);
+  if (message) qp.set("message", message);
+  return `solana:${to}?${qp.toString()}`;
+}
