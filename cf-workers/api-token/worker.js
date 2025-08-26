@@ -6,6 +6,7 @@
 //   early_claim_enabled ("true"/"false"), early_claim_fee_bps, early_claim_fee_dest ("lp"|"treasury"),
 //   wait_bonus_bps, early_fee_usdc_ata
 //   ZUSATZ (für Preis-Tiers): tier_nft_price_usdc, tier_public_price_usdc, public_mint_price_usdc
+//   GATE via KV: nft_gate_enabled ("true"/"false"), gate_collection, gate_mint  (ENV > KV)
 
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC4wEGGkZwyTDt1v";
 const QR_SVC    = "https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=";
@@ -27,6 +28,7 @@ export default {
         const cfg     = await readPublicConfig(env);
         const rpc_url = await getPublicRpcUrl(env);
         const early   = await getEarlyConfig(env);
+        const gate    = await getGateSetup(env); // neu
 
         // Deposit + Owner (für Solana Pay als "to" prefer Owner)
         const depoAta = cfg.presale_deposit_usdc || "";
@@ -64,7 +66,7 @@ export default {
           presale_price_usdc: toNumOrNull(cfg.presale_price_usdc),
           public_price_usdc:  toNumOrNull(cfg.public_price_usdc),
 
-          // neue Tier-Preise (Frontend nutzt das für "mit/ohne NFT")
+          // neue Tier-Preise
           price_with_nft_usdc:  priceWith,
           price_without_nft_usdc: priceWithout,
 
@@ -74,6 +76,13 @@ export default {
           cap_per_wallet_usdc: toNumOrNull(cfg.cap_per_wallet_usdc),
           presale_min_usdc: toNumOrNull(env.PRESALE_MIN_USDC),
           presale_max_usdc: toNumOrNull(env.PRESALE_MAX_USDC),
+
+          // Gate-Infos (sichtbar fürs Frontend)
+          gate: {
+            enabled: gate.enabled,
+            collection: gate.collection || null,
+            mint: gate.mint || null
+          },
 
           // Early-Claim/Boni
           early_claim: {
@@ -117,14 +126,11 @@ export default {
           cfg.INPI_MINT ? getSplBalance(rpc, wallet, cfg.INPI_MINT) : Promise.resolve(null)
         ]);
 
-        // Gate prüfen: zuerst Collection (DAS), sonst Mint
+        // Gate prüfen (ENV > KV)
+        const gate = await getGateSetup(env);
         let gate_ok = true;
-        const gateCollection = String(env.GATE_COLLECTION || "").trim();
-        const gateMint = String(env.GATE_MINT || "").trim();
-        if (gateCollection) {
-          gate_ok = await passesCollectionGate(env, wallet, gateCollection);
-        } else if (gateMint) {
-          gate_ok = await passesMintGate(env, wallet, gateMint);
+        if (gate.enabled) {
+          gate_ok = await passesAnyGate(env, wallet, gate.collection, gate.mint);
         }
 
         return J({ ok:true, wallet, usdc, inpi, gate_ok, updated_at:Date.now() });
@@ -157,15 +163,11 @@ export default {
         const depoAta = cfg.presale_deposit_usdc || "";
         if (!isAddress(depoAta)) return J({ ok:false, error:"deposit_not_ready" }, 503);
 
-        // Gate prüfen (und ggf. erzwingen)
-        const gateCollection = String(env.GATE_COLLECTION || "").trim();
-        const gateMint = String(env.GATE_MINT || "").trim();
+        // Gate erzwingen wenn aktiv
+        const gate = await getGateSetup(env);
         let gateOk = true;
-        if (gateCollection) {
-          gateOk = await passesCollectionGate(env, wallet, gateCollection);
-          if (!gateOk) return J({ ok:false, error:"gate_denied" }, 403);
-        } else if (gateMint) {
-          gateOk = await passesMintGate(env, wallet, gateMint);
+        if (gate.enabled) {
+          gateOk = await passesAnyGate(env, wallet, gate.collection, gate.mint);
           if (!gateOk) return J({ ok:false, error:"gate_denied" }, 403);
         }
 
@@ -200,8 +202,8 @@ export default {
           wallet,
           amount_usdc: amount,
           expected_inpi,
-          applied_price_usdc: appliedPrice, // <-- Transparenz
-          gate_ok: gateOk,                  // <-- zur UI
+          applied_price_usdc: appliedPrice,
+          gate_ok: gateOk,
           deposit_usdc_ata: depoAta,
           usdc_mint: USDC_MINT,
           solana_pay_url: sp,
@@ -334,7 +336,7 @@ export default {
         if (!tx) return J({ ok:false, error:"tx_not_found" }, 404);
 
         const pre = tx.meta?.preTokenBalances || [];
-               post = tx.meta?.postTokenBalances || [];
+        const post = tx.meta?.postTokenBalances || [];
         const ownerOut = ownerDeltaUSDC(pre, post, wallet);
         const destIn  = accountDeltaUSDC(pre, post, destAta);
 
@@ -507,7 +509,7 @@ async function reconcileOne(req, env) {
 
   if (!tx) return J({ ok:false, error:"tx_not_found" }, 404);
   const meta = tx.meta || {};
-  0
+
   const pre = meta.preTokenBalances || [];
   const post = meta.postTokenBalances || [];
   const blockTime = tx.blockTime ? (tx.blockTime * 1000) : null;
@@ -556,6 +558,52 @@ async function reconcileOne(req, env) {
 }
 
 /* ---------------- Gate-Helper ---------------- */
+
+// Master-Gate: ENV > KV; collection kann Komma-Liste oder Child-Asset sein
+async function getGateSetup(env) {
+  // ENV übersteuert
+  const envCollection = String(env.GATE_COLLECTION || "").trim();
+  const envMint       = String(env.GATE_MINT || "").trim();
+
+  // KV-Fallbacks
+  const g = await readGateConfig(env);
+  const kvCollection = String(g.gate_collection || g.nft_gate_collection || "").trim();
+  const kvMint       = String(g.gate_mint || "").trim();
+  const enabledRaw   = String(g.nft_gate_enabled || (envCollection || envMint || kvCollection || kvMint ? "true" : "false")).toLowerCase();
+
+  return {
+    enabled: enabledRaw === "true",
+    collection: envCollection || kvCollection || "",
+    mint: envMint || kvMint || ""
+  };
+}
+
+async function readGateConfig(env) {
+  const out = {};
+  const keys = ["nft_gate_enabled","gate_collection","nft_gate_collection","gate_mint"];
+  await Promise.all(keys.map(async k => (out[k] = await env.CONFIG.get(k))));
+  return out;
+}
+
+async function passesAnyGate(env, owner, collectionList, mintList) {
+  // Wenn Listen (Komma), reicht ein Treffer
+  const collections = (collectionList || "").split(",").map(s=>s.trim()).filter(Boolean);
+  const mints       = (mintList || "").split(",").map(s=>s.trim()).filter(Boolean);
+
+  // erst Collection(s)/Child-Asset(s), dann Mint(s)
+  for (const c of collections) {
+    const ok = await passesCollectionGateOrChild(env, owner, c);
+    if (ok) return true;
+  }
+  for (const m of mints) {
+    const ok = await passesMintGate(env, owner, m);
+    if (ok) return true;
+  }
+  // wenn gar nichts konfiguriert war -> fail-open
+  if (collections.length === 0 && mints.length === 0) return true;
+  return false;
+}
+
 async function passesMintGate(env, owner, gateMint) {
   try {
     const rpc = await getPublicRpcUrl(env);
@@ -570,33 +618,74 @@ async function passesMintGate(env, owner, gateMint) {
 }
 
 // Collection-Gate via Helius DAS (compressed & uncompressed)
-async function passesCollectionGate(env, owner, collection) {
+// akzeptiert: echte Collection-ID ODER Child-Asset/Mint-ID
+async function passesCollectionGateOrChild(env, owner, target) {
+  if (!target) return false;
   try {
     const rpc = await getPublicRpcUrl(env);
-    const body = {
-      jsonrpc: "2.0", id: 1, method: "getAssetsByOwner",
-      params: {
-        ownerAddress: owner, page: 1, limit: 100,
-        displayOptions: { showFungible: false, showInscription: false }
+
+    // 1) Fast-Path: target als Asset-ID/Mint prüfen (getAsset)
+    //    -> wenn Besitzer = owner, ist Gate erfüllt.
+    try {
+      const r1 = await fetch(rpc, {
+        method: "POST",
+        headers: { "content-type":"application/json", "accept":"application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: 1, method: "getAsset",
+          params: { id: target }
+        })
+      });
+      const j1 = await r1.json().catch(()=>null);
+      const asset = j1?.result;
+      const assetOwner = asset?.ownership?.owner || asset?.ownership?.ownerAddress || asset?.ownership?.owner?.address;
+      if (isAddress(assetOwner) && String(assetOwner) === String(owner)) return true;
+
+      // Falls target eigentlich eine Collection-ID ist, prüfe, ob das Asset zu dieser Collection gehört (dann gleich noch ein Besitzercheck)
+      const assetCollection = (asset?.grouping || asset?.groups || []).find(g => g?.group_key === "collection")?.group_value;
+      if (assetCollection && String(assetCollection) === String(target)) {
+        // owner hält dieses asset? (oben schon geprüft; wenn nicht, weiter unten globaler Scan)
       }
-    };
-    const r = await fetch(rpc, {
-      method: "POST",
-      headers: { "content-type":"application/json", "accept":"application/json" },
-      body: JSON.stringify(body)
-    });
-    const j = await r.json().catch(()=>null);
-    const items = j?.result?.items || [];
-    for (const a of items) {
-      const groups = a?.grouping || a?.groups || [];
-      if (Array.isArray(groups)) {
-        if (groups.some(g => (g?.group_key === "collection" && String(g?.group_value) === String(collection)))) {
-          return true;
+    } catch { /* still ok */ }
+
+    // 2) Owner-Scan: getAssetsByOwner — suche entweder:
+    //    a) Ein Asset mit id == target (Child-NFT) ODER
+    //    b) Ein Asset mit grouping.collection == target (Collection-Gate)
+    //    Paging begrenzt (max ~1500 Items) für Workers-CPU
+    let page = 1;
+    const LIMIT = 500;
+    for (let round = 0; round < 3; round++) {
+      const r2 = await fetch(rpc, {
+        method: "POST",
+        headers: { "content-type":"application/json", "accept":"application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: 1, method: "getAssetsByOwner",
+          params: {
+            ownerAddress: owner, page, limit: LIMIT,
+            displayOptions: { showFungible: false, showInscription: false }
+          }
+        })
+      });
+      const j2 = await r2.json().catch(()=>null);
+      const items = j2?.result?.items || [];
+      if (!Array.isArray(items) || items.length === 0) break;
+
+      for (const a of items) {
+        if (String(a?.id || "") === String(target)) return true; // Child-NFT explizit
+        const groups = a?.grouping || a?.groups || [];
+        if (Array.isArray(groups)) {
+          if (groups.some(g => (g?.group_key === "collection" && String(g?.group_value) === String(target)))) {
+            return true; // irgendein NFT aus der gewünschten Collection
+          }
         }
       }
+
+      if (items.length < LIMIT) break;
+      page += 1;
     }
     return false;
-  } catch { return true; } // Fail-open
+  } catch {
+    return true; // Fail-open
+  }
 }
 
 /* ---------------- Balance-Helper ---------------- */
@@ -665,8 +754,8 @@ async function readPublicConfig(env) {
     "early_fee_usdc_ata",
     // Preis-Tiers & Mint
     "tier_nft_price_usdc","tier_public_price_usdc","public_mint_price_usdc",
-    // Gate Keys (optional, nur lesend für Status/Debug)
-    "gate_collection","gate_mint"
+    // Gate Keys (nur Anzeige/Debug; Enforcement via getGateSetup)
+    "nft_gate_enabled","gate_collection","nft_gate_collection","gate_mint"
   ];
   const out = {};
   await Promise.all(keys.map(async (k) => (out[k] = await env.CONFIG.get(k))));
