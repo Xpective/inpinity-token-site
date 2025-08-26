@@ -10,9 +10,10 @@ const CFG = {
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC4wEGGkZwyTDt1v",
   API_BASE: "https://inpinity.online/api/token",
 
-  // Standard-Preise (werden durch /status übersteuert, falls gesetzt)
-  PRICE_WITH_NFT: 0.0003141,
-  PRICE_WITHOUT_NFT: 0.003141,
+  // Nur echte Fallbacks, wenn API DOWN ist (wir überschreiben NICHT,
+  // wenn das Backend absichtlich null/leer liefert!)
+  PRICE_WITH_NFT_FALLBACK: 0.0003141,
+  PRICE_WITHOUT_NFT_FALLBACK: 0.003141,
 
   DEPOSIT_USDC_ATA_FALLBACK: "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
   TGE_TS_FALLBACK: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 90
@@ -48,8 +49,8 @@ const qrImg = $("#inpi-qr");
 
 // EARLY CLAIM UI ($1 Fee)
 const earlyBox = $("#earlyBox");
-const btnClaim = $("#btnClaim"); // <-- NEU: Claim-Button
-const earlyArea = $("#earlyArea"); // optional
+const btnClaim = $("#btnClaim");
+const earlyArea = $("#earlyArea");
 const earlyMsg = $("#earlyMsg");
 const earlyQR = $("#early-qr");
 const earlyExpect = $("#earlyExpected");
@@ -80,14 +81,14 @@ const STATE = {
 
   presale_state: "pre",
   tge_ts: null,
-  deposit_owner: null,
   deposit_ata: null,
 
   presale_min_usdc: null,
   presale_max_usdc: null,
 
-  price_with_nft_usdc: CFG.PRICE_WITH_NFT,
-  price_without_nft_usdc: CFG.PRICE_WITHOUT_NFT,
+  // Kann echt null sein (wenn ohne NFT NICHT erlaubt) – NICHT überschreiben!
+  price_with_nft_usdc: null,
+  price_without_nft_usdc: null,
 
   gate_ok: false,
 
@@ -100,22 +101,55 @@ const STATE = {
 
 /* ---------- Preis/Erwartung ---------- */
 function currentPriceUSDC() {
+  // gate_ok => Tier "mit NFT", sonst "ohne NFT"
   return STATE.gate_ok ? STATE.price_with_nft_usdc : STATE.price_without_nft_usdc;
 }
 function calcExpectedInpi(usdc) {
   if (!usdc || usdc <= 0) return "–";
   const price = currentPriceUSDC();
+  if (!price || price <= 0) return "–";
   const tokens = usdc / price;
   return fmt(tokens, 0) + " INPI";
 }
 function updatePriceRow() {
   if (!p0) return;
-  const w = STATE.price_with_nft_usdc;
+  const w  = STATE.price_with_nft_usdc;
   const wo = STATE.price_without_nft_usdc;
   const active = currentPriceUSDC();
+
+  const withTxt = (w && w > 0) ? Number(w).toFixed(6) + " USDC" : "–";
+  const woTxt   = (wo && wo > 0) ? Number(wo).toFixed(6) + " USDC" : "–";
+  const actTxt  = (active && active > 0) ? Number(active).toFixed(6) + " USDC" : "–";
   const badge = STATE.gate_ok ? "NFT ✓" : "NFT ✗";
-  p0.textContent = `mit NFT: ${Number(w).toFixed(6)} USDC • ohne NFT: ${Number(wo).toFixed(6)} USDC • dein aktiv: ${Number(active).toFixed(6)} USDC`;
+
+  p0.textContent = `mit NFT: ${withTxt} • ohne NFT: ${woTxt} • dein aktiv: ${actTxt}`;
   if (gateBadge) gateBadge.textContent = `(${badge})`;
+}
+
+/* ---------- Intent-Verfügbarkeit ---------- */
+function updateIntentAvailability() {
+  let reason = null;
+  if (STATE.presale_state === "closed") {
+    reason = "Der Presale ist geschlossen.";
+  } else if (!STATE.gate_ok && (STATE.price_without_nft_usdc == null || STATE.price_without_nft_usdc <= 0)) {
+    reason = "Nur mit NFT zugelassen (Gate aktiv).";
+  }
+
+  if (btnPresaleIntent) {
+    btnPresaleIntent.disabled = !!reason;
+    btnPresaleIntent.title = reason || "";
+  }
+  if (intentMsg) {
+    // optionalen Hinweis rendern
+    const id = "intent-reason";
+    let el = document.getElementById(id);
+    if (reason) {
+      if (!el) { el = document.createElement("p"); el.id = id; el.className = "muted"; intentMsg.appendChild(el); }
+      el.textContent = "Hinweis: " + reason;
+    } else if (el) {
+      el.remove();
+    }
+  }
 }
 
 /* ==================== INIT ==================== */
@@ -129,9 +163,11 @@ async function init() {
   }
 
   updatePriceRow();
+  updateIntentAvailability();
 
   if (inpAmount && STATE.presale_min_usdc != null) inpAmount.min = String(STATE.presale_min_usdc);
   if (inpAmount && STATE.presale_max_usdc != null) inpAmount.max = String(STATE.presale_max_usdc);
+  if (inpAmount && !inpAmount.step) inpAmount.step = "0.000001";
 
   if (window.solana?.isPhantom) {
     provider = window.solana;
@@ -164,7 +200,7 @@ async function init() {
   }
 
   if (earlyBox) earlyBox.style.display = STATE.early.enabled ? "block" : "none";
-  if (btnClaim) btnClaim.onclick = startEarlyFlow;       // <-- Claim-Button startet Early-Claim
+  if (btnClaim) btnClaim.onclick = startEarlyFlow;
   if (btnEarlyConfirm) btnEarlyConfirm.onclick = confirmEarlyFee;
 
   // Bonushinweis einmalig setzen
@@ -174,24 +210,20 @@ async function init() {
 /* ---------- Bonus-Hinweis (3–7 %) ---------- */
 function setBonusNote() {
   const text = "Hinweis: Wenn du NICHT früh claimst, erhältst du vor TGE/Pool einen zusätzlichen Bonus-Airdrop von ca. 3–7 % auf deine noch offenen INPI. Der genaue Bonus hängt vom Wartezeitraum ab.";
-  // Versuche, ihn unter Early-Box oder im Intent-Bereich zu platzieren.
   const p = document.createElement("p");
   p.className = "muted";
   p.style.marginTop = ".5rem";
   p.textContent = text;
 
   if (earlyBox) {
-    // nur hinzufügen, wenn nicht schon vorhanden
-    const already = earlyBox.querySelector(".bonus-note");
-    if (!already) {
+    if (!earlyBox.querySelector(".bonus-note")) {
       const div = document.createElement("div");
       div.className = "bonus-note";
       div.appendChild(p);
       earlyBox.appendChild(div);
     }
   } else if (intentMsg) {
-    const already = intentMsg.querySelector(".bonus-note");
-    if (!already) {
+    if (!intentMsg.querySelector(".bonus-note")) {
       const div = document.createElement("div");
       div.className = "bonus-note";
       div.appendChild(p);
@@ -211,18 +243,28 @@ async function refreshStatus(){
     STATE.usdc_mint     = j?.usdc_mint || CFG.USDC_MINT;
 
     STATE.presale_state = j?.presale_state || "pre";
-    STATE.tge_ts        = j?.tge_ts || CFG.TGE_TS_FALLBACK;
-    STATE.deposit_owner = j?.deposit_usdc_owner || null;
+    STATE.tge_ts        = (j?.tge_ts ?? CFG.TGE_TS_FALLBACK);
+
+    // Deposit-ATA (kann leer sein, dann Fallback NUR wenn API leer/kaputt wirkt)
     STATE.deposit_ata   = j?.deposit_usdc_ata || CFG.DEPOSIT_USDC_ATA_FALLBACK;
 
-    STATE.presale_min_usdc = j?.presale_min_usdc ?? null;
-    STATE.presale_max_usdc = j?.presale_max_usdc ?? null;
+    // Limits direkt aus API (können null sein)
+    STATE.presale_min_usdc = (typeof j?.presale_min_usdc === "number") ? j.presale_min_usdc : null;
+    STATE.presale_max_usdc = (typeof j?.presale_max_usdc === "number") ? j.presale_max_usdc : null;
 
-    // Preise aus Status (mit/ohne Gate)
-    const w = Number(j?.price_with_nft_usdc ?? j?.presale_price_usdc);
-    const wo = Number(j?.price_without_nft_usdc ?? j?.public_price_usdc);
-    STATE.price_with_nft_usdc    = Number.isFinite(w)  && w  > 0 ? w  : CFG.PRICE_WITH_NFT;
-    STATE.price_without_nft_usdc = Number.isFinite(wo) && wo > 0 ? wo : CFG.PRICE_WITHOUT_NFT;
+    // Preise aus Status – WICHTIG:
+    // Wir respektieren absichtliche nulls (z.B. price_without_nft_usdc=null => kein Public ohne NFT)
+    const hasW  = ("price_with_nft_usdc" in (j||{}));
+    const hasWo = ("price_without_nft_usdc" in (j||{}));
+
+    STATE.price_with_nft_usdc    = hasW  ? (Number(j.price_with_nft_usdc)  || null) : (Number(j?.presale_price_usdc) || null);
+    STATE.price_without_nft_usdc = hasWo ? (Number(j.price_without_nft_usdc) || null) : (Number(j?.public_price_usdc) || null);
+
+    // Falls API komplett leer/kaputt (beide null/undefined) => echte Fallbacks
+    if (STATE.price_with_nft_usdc == null && STATE.price_without_nft_usdc == null) {
+      STATE.price_with_nft_usdc    = CFG.PRICE_WITH_NFT_FALLBACK;
+      STATE.price_without_nft_usdc = CFG.PRICE_WITHOUT_NFT_FALLBACK;
+    }
 
     // Early aus status
     const ec = j?.early_claim || {};
@@ -232,6 +274,7 @@ async function refreshStatus(){
 
     if (presaleState) presaleState.textContent = STATE.presale_state;
     updatePriceRow();
+    updateIntentAvailability();
   } catch (e) {
     console.error(e);
 
@@ -241,11 +284,14 @@ async function refreshStatus(){
 
     STATE.presale_state = "pre";
     STATE.tge_ts        = CFG.TGE_TS_FALLBACK;
-    STATE.deposit_owner = null;
     STATE.deposit_ata   = CFG.DEPOSIT_USDC_ATA_FALLBACK;
+
+    STATE.price_with_nft_usdc    = CFG.PRICE_WITH_NFT_FALLBACK;
+    STATE.price_without_nft_usdc = CFG.PRICE_WITHOUT_NFT_FALLBACK;
 
     if (presaleState) presaleState.textContent = "API offline";
     updatePriceRow();
+    updateIntentAvailability();
   }
 
   if (depositAddrEl) {
@@ -262,7 +308,7 @@ async function refreshStatus(){
 async function refreshClaimStatus(){
   if (!pubkey) return;
   try{
-    const st = await fetch(`${CFG.API_BASE}/claim/status?wallet=${pubkey.toBase58()}`).then(r=>r.json());
+    const st = await fetch(`${CFG.API_BASE}/claim/status?wallet=${pubkey.toBase58()}`, { headers:{accept:"application/json"} }).then(r=>r.json());
     const pending = Number(st?.pending_inpi || 0);
     STATE.claimable_inpi = pending;
     if (earlyExpect) earlyExpect.textContent = fmt(pending, 0) + " INPI";
@@ -302,6 +348,7 @@ function onDisconnected(){
   STATE.claimable_inpi = 0;
   if (earlyExpect) earlyExpect.textContent = "–";
   updatePriceRow();
+  updateIntentAvailability();
   clearInterval(POLL);
 }
 
@@ -333,6 +380,13 @@ if (btnPresaleIntent) {
   btnPresaleIntent.addEventListener("click", async () => {
     if (inFlight) return;
     if (!pubkey) return alert("Bitte zuerst mit Phantom verbinden.");
+
+    // Phase / Gate prüfen
+    if (STATE.presale_state === "closed") return alert("Presale ist geschlossen.");
+    if (!STATE.gate_ok && (STATE.price_without_nft_usdc == null || STATE.price_without_nft_usdc <= 0)) {
+      return alert("Nur mit NFT zugelassen (Gate aktiv).");
+    }
+
     const usdc = Number(inpAmount?.value || "0");
     if (!usdc || usdc <= 0) return alert("Bitte gültigen USDC-Betrag eingeben.");
 
@@ -350,8 +404,15 @@ if (btnPresaleIntent) {
       if (provider?.signMessage) {
         msg_str = `INPI Presale Intent\nwallet=${pubkey.toBase58()}\namount_usdc=${usdc}\nts=${Date.now()}`;
         const enc = new TextEncoder().encode(msg_str);
-        const { signature } = await provider.signMessage(enc, "utf8");
-        sig_b58 = bs58Encode(signature);
+
+        // Phantom kann {signature} zurückgeben oder direkt Uint8Array
+        let signed = await provider.signMessage(enc, "utf8").catch(async () => {
+          try { return await provider.signMessage(enc); } catch { return null; }
+        });
+        const signatureBytes = (signed && signed.signature) ? signed.signature : signed;
+        if (signatureBytes && signatureBytes.length) {
+          sig_b58 = bs58Encode(signatureBytes);
+        }
       }
 
       const r = await fetch(`${CFG.API_BASE}/presale/intent?format=json`, {
@@ -362,14 +423,13 @@ if (btnPresaleIntent) {
 
       const j = await r.json().catch(()=>null);
       if (!r.ok || !j?.ok) {
-        const raw = await r.text().catch(()=> "");
-        throw new Error((j?.error || raw || "Intent fehlgeschlagen"));
+        const raw = (j && (j.error || j.detail)) ? (j.error || j.detail) : (await r.text().catch(()=> ""));
+        throw new Error(raw || "Intent fehlgeschlagen");
       }
 
       if (payArea) payArea.style.display = "block";
       if (qrImg && j.qr_url) { qrImg.src = j.qr_url; qrImg.style.display = "block"; }
 
-      // Nur QR + manuelle Info (keine Deep-Links mehr)
       if (intentMsg) {
         intentMsg.textContent = "";
         const p1 = document.createElement("p");
@@ -404,7 +464,6 @@ async function startEarlyFlow(){
   if (earlyExpect) earlyExpect.textContent = fmt(pending, 0) + " INPI";
 
   try {
-    // Hole QR/Links vom Server (Fee-Ziel + 1 USDC)
     const r = await fetch(`${CFG.API_BASE}/claim/early-intent`, {
       method:"POST",
       headers:{ "content-type":"application/json", "accept":"application/json" },
@@ -460,12 +519,13 @@ async function refreshBalances() {
   if (!pubkey) return;
   try {
     const url = `${CFG.API_BASE}/wallet/balances?wallet=${pubkey.toBase58()}`;
-    const j = await fetch(url).then(r => r.json());
+    const j = await fetch(url, { headers:{accept:"application/json"} }).then(r => r.json());
     const u = Number(j?.usdc?.uiAmount ?? 0);
     const i = Number(j?.inpi?.uiAmount ?? 0);
 
     STATE.gate_ok = !!j?.gate_ok;
     updatePriceRow();
+    updateIntentAvailability();
 
     if (usdcBal) usdcBal.textContent = fmt(u, 6) + " USDC";
     if (inpiBal) inpiBal.textContent = fmt(i, 2) + " INPI";
