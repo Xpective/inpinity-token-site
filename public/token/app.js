@@ -1,5 +1,5 @@
 /* ===========================================
-   Inpinity Token – Frontend (Phantom-only)
+   Inpinity Token – Frontend (Phantom-first)
    Pfad: /public/token/app.js
    =========================================== */
 
@@ -10,7 +10,7 @@ const CFG = {
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   API_BASE: "https://inpinity.online/api/token",
 
-  P0_USDC: 0.00031415,           // Fallback-Preis
+  P0_USDC: 0.00031415,           // Fallback-Preis pro 1 INPI
   PRESALE_DISCOUNT: 0.10,        // Fallback-Rabatt
 
   DEPOSIT_USDC_ATA_FALLBACK: "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
@@ -42,6 +42,13 @@ const intentMsg = $("#intentMsg");
 const depositAddrEl = $("#depositAddr");
 const depositSolscanA = $("#depositSolscan");
 
+// Pay-Area
+const payArea = $("#payArea");
+const qrImg = $("#inpi-qr");
+const btnPhantom = $("#btn-phantom");
+const btnSolflare = $("#btn-solflare");
+const btnSolpay = $("#btn-solpay");
+
 let connection = null;
 let currentRpcUrl = null;
 let provider = null; // Phantom
@@ -56,7 +63,9 @@ const STATE = {
   price_public: null,
   presale_state: "pre",
   tge_ts: null,
-  deposit_ata: null
+  deposit_ata: null,
+  presale_min_usdc: null,
+  presale_max_usdc: null
 };
 
 /* ---------- Preis/Erwartung ---------- */
@@ -84,6 +93,10 @@ async function init() {
 
   p0.textContent = `${Number(STATE.price_presale ?? (CFG.P0_USDC*(1-CFG.PRESALE_DISCOUNT))).toFixed(6)} USDC`;
 
+  // Min/Max vom Server auf Input setzen
+  if (STATE.presale_min_usdc != null) inpAmount.min = String(STATE.presale_min_usdc);
+  if (STATE.presale_max_usdc != null) inpAmount.max = String(STATE.presale_max_usdc);
+
   if (window.solana?.isPhantom) {
     provider = window.solana;
     try {
@@ -91,6 +104,7 @@ async function init() {
         .then(({ publicKey }) => onConnected(publicKey));
     } catch {}
     btnConnect.disabled = false;
+    btnConnect.textContent = "Verbinden";
   } else {
     btnConnect.textContent = "Phantom installieren";
     btnConnect.onclick = () => window.open("https://phantom.app", "_blank");
@@ -98,6 +112,9 @@ async function init() {
 
   tickTGE();
   setInterval(tickTGE, 1000);
+
+  // Erwartung initial
+  expectedInpi.textContent = calcExpectedInpi(Number(inpAmount.value || "0"));
 }
 
 async function refreshStatus(){
@@ -114,6 +131,8 @@ async function refreshStatus(){
     STATE.price_presale = j?.presale_price_usdc ?? null;
     STATE.price_public  = j?.public_price_usdc ?? null;
     STATE.deposit_ata   = j?.deposit_usdc_ata || CFG.DEPOSIT_USDC_ATA_FALLBACK;
+    STATE.presale_min_usdc = j?.presale_min_usdc ?? null;
+    STATE.presale_max_usdc = j?.presale_max_usdc ?? null;
 
   } catch (e) {
     console.error(e);
@@ -189,7 +208,7 @@ btnHowTo.addEventListener("click", () => {
 `Kurzanleitung:
 1) Phantom verbinden
 2) Intent senden (wir prüfen Cap & registrieren dich)
-3) USDC an die angezeigte Presale-Adresse senden
+3) USDC mit Solana Pay (QR/Buttons) an die Deposit-Adresse senden
 4) Nach TGE claimst du deine INPI`
   );
 });
@@ -202,10 +221,18 @@ btnPresaleIntent.addEventListener("click", async () => {
   const usdc = Number(inpAmount.value || "0");
   if (!usdc || usdc <= 0) return alert("Bitte gültigen USDC-Betrag eingeben.");
 
+  // Min/Max local check
+  if (STATE.presale_min_usdc != null && usdc < STATE.presale_min_usdc) {
+    return alert(`Mindestens ${STATE.presale_min_usdc} USDC.`);
+  }
+  if (STATE.presale_max_usdc != null && usdc > STATE.presale_max_usdc) {
+    return alert(`Maximal ${STATE.presale_max_usdc} USDC.`);
+  }
+
   inFlight = true;
   intentMsg.textContent = "Prüfe Caps & registriere Intent …";
   try {
-    // optionaler Sign-In via Nachricht
+    // optionale Nachricht signieren
     let sig_b58 = null, msg_str = null;
     if (provider.signMessage) {
       msg_str = `INPI Presale Intent\nwallet=${pubkey.toBase58()}\namount_usdc=${usdc}\nts=${Date.now()}`;
@@ -214,40 +241,58 @@ btnPresaleIntent.addEventListener("click", async () => {
       sig_b58 = bs58Encode(signature);
     }
 
-    const r = await fetch(`${CFG.API_BASE}/presale/intent`, {
+    const r = await fetch(`${CFG.API_BASE}/presale/intent?format=json`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "accept":"application/json" },
       body: JSON.stringify({ wallet: pubkey.toBase58(), amount_usdc: usdc, sig_b58, msg_str })
     });
-    const text = await r.text();
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(t || "Intent fehlgeschlagen");
+    }
+    const j = await r.json();
 
-    intentMsg.textContent = "";
-    const p = document.createElement("p"); p.textContent = text; intentMsg.appendChild(p);
+    // Ergebnisbereich sichtbar machen
+    payArea.style.display = "block";
 
-    if (STATE.deposit_ata) {
-      const small = document.createElement("small");
-      small.innerText = `Deposit-Adresse (USDC): ${STATE.deposit_ata} `;
-      const a = document.createElement("a");
-      a.href = solscan(STATE.deposit_ata); a.target="_blank"; a.rel="noopener";
-      a.textContent = `(Solscan)`;
-      small.appendChild(a);
-
-      const copyBtn = document.createElement("button");
-      copyBtn.className = "secondary";
-      copyBtn.textContent = "Kopieren";
-      copyBtn.onclick = async () => {
-        try { await navigator.clipboard.writeText(STATE.deposit_ata); copyBtn.textContent = "Kopiert ✓"; setTimeout(()=>copyBtn.textContent="Kopieren",1000); } catch {}
-      };
-      small.appendChild(document.createTextNode(" "));
-      small.appendChild(copyBtn);
-
-      intentMsg.appendChild(small);
+    // QR + Links
+    if (j.qr_url) {
+      qrImg.src = j.qr_url;
+      qrImg.style.display = "block";
+    }
+    if (j.phantom_universal_url) btnPhantom.href = j.phantom_universal_url;
+    if (j.solflare_universal_url) btnSolflare.href = j.solflare_universal_url;
+    if (j.solana_pay_url) {
+      btnSolpay.href = j.solana_pay_url;
+      btnSolpay.onclick = () => { window.location.href = j.solana_pay_url; };
     }
 
-    await refreshStatus();
+    // Textinfo/Copy
+    intentMsg.textContent = "";
+    const p = document.createElement("p");
+    p.textContent = `✅ Intent registriert. Bitte ${usdc} USDC an ${j.deposit_usdc_ata} senden (USDC SPL).`;
+    intentMsg.appendChild(p);
+
+    const small = document.createElement("small");
+    small.innerText = `Deposit-Adresse (USDC): ${j.deposit_usdc_ata} `;
+    const a = document.createElement("a");
+    a.href = solscan(j.deposit_usdc_ata); a.target="_blank"; a.rel="noopener"; a.textContent = `(Solscan)`;
+    small.appendChild(a);
+
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "secondary";
+    copyBtn.textContent = "Kopieren";
+    copyBtn.onclick = async () => {
+      try { await navigator.clipboard.writeText(j.deposit_usdc_ata); copyBtn.textContent = "Kopiert ✓"; setTimeout(()=>copyBtn.textContent="Kopieren",1000); } catch {}
+    };
+    small.appendChild(document.createTextNode(" "));
+    small.appendChild(copyBtn);
+    intentMsg.appendChild(small);
+
+    await refreshStatus(); // falls Preise/Phase live geändert
   } catch (e) {
     console.error(e);
-    intentMsg.textContent = "API nicht erreichbar.";
+    alert(`Intent fehlgeschlagen:\n${e?.message || e}`);
   } finally {
     inFlight = false;
   }
@@ -259,9 +304,9 @@ async function refreshBalances() {
   try {
     const url = `${CFG.API_BASE}/wallet/balances?wallet=${pubkey.toBase58()}`;
     const j = await fetch(url).then(r => r.json());
-    const u = Number(j?.usdc?.amount ?? 0);
-    const i = Number(j?.inpi?.amount ?? 0);
-    usdcBal.textContent = fmt(u, 2) + " USDC";
+    const u = Number(j?.usdc?.uiAmount ?? 0);
+    const i = Number(j?.inpi?.uiAmount ?? 0);
+    usdcBal.textContent = fmt(u, 6) + " USDC";
     inpiBal.textContent = fmt(i, 2) + " INPI";
   } catch (e) {
     console.error(e);

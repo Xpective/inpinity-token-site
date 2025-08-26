@@ -10,7 +10,7 @@
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self';
                  connect-src 'self' https://inpinity.online;
-                 img-src 'self' data:;
+                 img-src 'self' data: https://api.qrserver.com;
                  script-src 'self' https://cdn.jsdelivr.net;
                  style-src 'self' 'unsafe-inline';
                  object-src 'none'; frame-ancestors 'none'; base-uri 'none'">
@@ -63,13 +63,31 @@
     <section>
       <h2>Presale Intent</h2>
       <label>USDC Betrag
-        <input id="inpAmount" type="number" min="1" step="1" value="100" />
+        <input id="inpAmount" type="number" min="1" step="0.01" value="10" />
       </label>
       <div><small>Erwartete Zuteilung: <b id="expectedInpi">–</b></small></div>
       <div style="margin-top:.6rem;display:flex;gap:.6rem;flex-wrap:wrap">
         <button id="btnPresaleIntent">Intent senden</button>
         <button id="btnHowTo" class="secondary">Kurzanleitung</button>
       </div>
+
+      <!-- Ergebnis/Kanäle -->
+      <div id="payArea" class="card" style="margin-top:.8rem;display:none">
+        <h3>Jetzt bezahlen</h3>
+        <div class="row" style="gap:1rem;align-items:center;flex-wrap:wrap">
+          <img id="inpi-qr" alt="Scan & pay via Solana Pay" width="240" height="240" style="border:1px solid #eee;border-radius:8px;display:none"/>
+          <div class="col">
+            <p style="margin:0 0 .5rem 0">Öffnen mit Wallet:</p>
+            <div class="links" style="display:flex;gap:.5rem;flex-wrap:wrap">
+              <a id="btn-phantom"  class="btn" target="_blank" rel="noopener">In Phantom öffnen</a>
+              <a id="btn-solflare" class="btn" target="_blank" rel="noopener">In Solflare öffnen</a>
+              <a id="btn-solpay"   class="btn" >Direkter Solana-Pay Link</a>
+            </div>
+            <p class="muted" style="margin:.6rem 0 0 0">Bitte vom selben Wallet senden wie beim Intent.</p>
+          </div>
+        </div>
+      </div>
+
       <pre id="intentMsg" role="status" aria-live="polite"></pre>
     </section>
 

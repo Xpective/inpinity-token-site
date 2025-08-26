@@ -1,9 +1,15 @@
 // INPI Token API (Deposit-Balance, Wallet-Balances, Intent)
 // KV-Bindings: CONFIG, PRESALE, INPI_CLAIMS
-// Vars (optional): GATE_MINT, PRESALE_MIN_USDC, PRESALE_MAX_USDC
+// Vars (optional): GATE_MINT, PRESALE_MIN_USDC, PRESALE_MAX_USDC, RPC_URL
 // Secrets (optional): HELIUS_API_KEY
 
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const QR_SVC = "https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=";
+
+function wantsJson(req, url) {
+  const accept = (req.headers.get("accept") || "").toLowerCase();
+  return url.searchParams.get("format") === "json" || accept.includes("application/json");
+}
 
 export default {
   async fetch(req, env) {
@@ -79,6 +85,7 @@ export default {
       // ---- PRESALE INTENT (public; validiert)
       if (req.method === "POST" && p === "/api/token/presale/intent") {
         if (!(await isJson(req))) return J({ ok:false, error:"bad_content_type" }, 415);
+        const url = new URL(req.url);
         const body   = await req.json().catch(() => ({}));
         const wallet = String(body.wallet || "").trim();
         const amount = Number(body.amount_usdc || 0);
@@ -118,12 +125,36 @@ export default {
           wallet, amount_usdc: amount, sig_b58, msg_str, ts: Date.now()
         }), { expirationTtl: 60*60*24*30 });
 
-        // optionaler Solana Pay Link
+        // Solana Pay Link + Wallet-Deep-Links + QR
         const sp = makeSolanaPayUrl({
-          to: depo, amount, splToken: USDC_MINT,
-          label: "Inpinity Presale", message: "INPI Presale Contribution"
+          to: depo,
+          amount,
+          splToken: USDC_MINT,
+          label: "Inpinity Presale",
+          message: "INPI Presale Contribution",
         });
+        const phantom = `https://phantom.app/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
+        const solflare = `https://solflare.com/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
+        const qr_url = `${QR_SVC}${encodeURIComponent(sp)}`;
 
+        if (wantsJson(req, url)) {
+          return J({
+            ok: true,
+            wallet,
+            amount_usdc: amount,
+            deposit_usdc_ata: depo,
+            usdc_mint: USDC_MINT,
+            solana_pay_url: sp,
+            phantom_universal_url: phantom,
+            solflare_universal_url: solflare,
+            qr_url,
+            label: "Inpinity Presale",
+            message: "INPI Presale Contribution",
+            updated_at: Date.now()
+          });
+        }
+
+        // Fallback: Textantwort
         const text =
 `✅ Intent registriert.
 Bitte sende ${amount} USDC an:
@@ -195,7 +226,6 @@ async function rpcCall(rpcUrl, method, params) {
   const txt = await r.text();
 
   if (!r.ok) {
-    // häufiges Problem: Upstream blockt → liefert HTML/Text
     const head = txt.trim().slice(0, 160);
     throw new Error(`rpc_http_${r.status}: ${head}`);
   }
@@ -261,7 +291,7 @@ async function isJson(req){ return (req.headers.get("content-type")||"").toLower
 function J(obj, status=200, extra={}) {
   return new Response(JSON.stringify(obj), {
     status,
-    headers: { "content-type":"application/json; charset=utf-8", "cache-control":"no-store", ...secHeaders(), ...extra }
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control":"no-store", ...secHeaders(), ...extra }
   });
 }
 function secHeaders(){
