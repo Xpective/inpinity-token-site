@@ -1,9 +1,10 @@
-// INPI Token API (Deposit-Balance, Wallet-Balances, Intent, Reconcile, Claims)
+// INPI Token API (Deposit-Balance, Wallet-Balances, Intent, Reconcile, Claims, Allocations)
 // KV-Bindings: CONFIG, PRESALE, INPI_CLAIMS
 // Vars (optional): GATE_MINT, PRESALE_MIN_USDC, PRESALE_MAX_USDC, RPC_URL
 // Secrets (optional): HELIUS_API_KEY, RECONCILE_KEY
 
-const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+// ⚠️ KANONISCHE USDC-Adresse (Mainnet)
+const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC4wEGGkZwyTDt1v";
 const QR_SVC = "https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=";
 
 function wantsJson(req, url) {
@@ -16,6 +17,11 @@ export default {
     try {
       const url = new URL(req.url);
       const p = url.pathname;
+
+      // ---- CORS Preflight (global)
+      if (req.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: corsHeaders() });
+      }
 
       // ---- STATUS (public)
       if (req.method === "GET" && p === "/api/token/status") {
@@ -131,8 +137,64 @@ export default {
         return J({ ok:true, wallet, ...claim, updated_at: Date.now() });
       }
 
-      // ---- 404
-      return new Response("Not found", { status: 404, headers: secTextHeaders() });
+      // ---- ALLOCATIONS (public)
+      if (req.method === "GET" && p === "/api/token/allocations") {
+        const raw = await env.CONFIG.get("token:allocations", { type: "text" });
+        if (!raw) return J({ ok:false, error:"not_found" }, 404);
+        // als Text gespeichert -> unverändert zurückgeben (bereits JSON)
+        return new Response(raw, { status: 200, headers: { ...corsHeaders(), ...jsonMetaHeaders(), ...secHeaders(), "cache-control":"public, max-age=300" } });
+      }
+
+      // ---- ALLOCATIONS AUDIT (on-chain Vergleich, public)
+      if (req.method === "GET" && p === "/api/token/allocations/onchain") {
+        const raw = await env.CONFIG.get("token:allocations", { type: "text" });
+        if (!raw) return J({ ok:false, error:"not_found" }, 404);
+        let cfg; try { cfg = JSON.parse(raw); } catch { return J({ ok:false, error:"alloc_bad_json" }, 500); }
+        const rpc = await getPublicRpcUrl(env);
+
+        // On-chain Supply
+        const sup = await rpcCall(rpc, "getTokenSupply", [cfg.mint, { commitment:"confirmed" }]).catch(() => null);
+        const chainSupply = sup?.value ? {
+          amount: sup.value.amount,
+          decimals: sup.value.decimals,
+          uiAmount: Number(sup.value.amount) / (10 ** Number(sup.value.decimals || 0))
+        } : null;
+
+        // Für alle Einträge mit .ata den Kontostand holen
+        const rows = [];
+        let sumOnchain = 0;
+        for (const a of (cfg.allocations || [])) {
+          const ata = a.ata || null;
+          let on = null;
+          if (ata) {
+            const b = await rpcCall(rpc, "getTokenAccountBalance", [ata, { commitment:"confirmed" }]).catch(() => null);
+            if (b?.value) {
+              on = {
+                amount: b.value.amount,
+                decimals: b.value.decimals,
+                uiAmount: Number(b.value.amount) / (10 ** Number(b.value.decimals || 0))
+              };
+              sumOnchain += on.uiAmount;
+            }
+          }
+          rows.push({ label:a.label, owner:a.owner, ata, expected:a.amount ?? null, onchain:on });
+        }
+
+        const expectedSum = (cfg.allocations || []).reduce((s,x)=>s + Number(x.amount || 0), 0);
+        const okSum = (Math.floor(sumOnchain) === Number(expectedSum));
+
+        return J({
+          ok:true,
+          mint: cfg.mint,
+          supply: { expected_cfg: cfg.supply_total ?? null, chain: chainSupply },
+          totals: { expected_allocations: expectedSum, onchain_sum: sumOnchain, match_int: okSum },
+          allocations: rows,
+          updated_at: Date.now()
+        }, 200, { "cache-control":"no-store" });
+      }
+
+      // ---- 404 (JSON)
+      return J({ ok:false, error:"not_found" }, 404);
     } catch (e) {
       return J({ ok:false, error:"internal", detail: String(e?.message || e) }, 500);
     }
@@ -199,11 +261,12 @@ async function reconcileOne(req, env) {
       totals:{ total_usdc: claim.total_usdc, total_inpi: claim.total_inpi } });
   }
 
-  // Speichern
+  // Speichern (inkl. wallet-Feld als Selbst-Referenz)
   claim.total_usdc = round6((claim.total_usdc || 0) + usdc);
   claim.total_inpi = Math.floor((claim.total_inpi || 0) + inpi);
   claim.txs.push({ signature, usdc, inpi, slot, ts: blockTime || Date.now() });
   claim.updated_at = Date.now();
+  claim.wallet = wallet;
 
   await saveClaim(env, wallet, claim);
 
@@ -351,10 +414,23 @@ function isAddress(s){ return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(s || "
 function toNumOrNull(x){ if (x==null || x==="") return null; const n = Number(x); return Number.isFinite(n)? n : null; }
 async function isJson(req){ return (req.headers.get("content-type")||"").toLowerCase().includes("application/json"); }
 function adminOk(req, env){ return (req.headers.get("x-admin-key") || "") === String(env.RECONCILE_KEY || ""); }
+
+function corsHeaders() {
+  return {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET,POST,OPTIONS",
+    "access-control-allow-headers": "content-type,x-admin-key",
+    "access-control-max-age": "86400"
+  };
+}
+function jsonMetaHeaders(){
+  return { "content-type":"application/json; charset=utf-8" };
+}
+
 function J(obj, status=200, extra={}) {
   return new Response(JSON.stringify(obj), {
     status,
-    headers: { "content-type":"application/json; charset=utf-8", "cache-control":"no-store", ...secHeaders(), ...extra }
+    headers: { ...jsonMetaHeaders(), "cache-control":"no-store", ...secHeaders(), ...corsHeaders(), ...extra }
   });
 }
 function secHeaders(){
@@ -367,7 +443,7 @@ function secHeaders(){
   };
 }
 function secTextHeaders(){
-  return { "content-type":"text/plain; charset=utf-8", "cache-control":"no-store", ...secHeaders() };
+  return { "content-type":"text/plain; charset=utf-8", "cache-control":"no-store", ...secHeaders(), ...corsHeaders() };
 }
 function round6(x){ return Math.round(Number(x||0)*1e6)/1e6; }
 function numFrom(amountStr, decimals){
