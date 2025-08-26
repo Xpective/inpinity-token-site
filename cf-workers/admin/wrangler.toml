@@ -10,7 +10,7 @@ routes = [
 # ⚠️ Achte darauf, dass die CONFIG-Namespace-ID
 # GENAU dieselbe ist wie bei deiner Token-API!
 kv_namespaces = [
-  { binding = "CONFIG", id = "a82cb91c589b4b1a8c786807a49fe5f5" },
+  { binding = "INPI_CONFIG", id = "a82cb91c589b4b1a8c786807a49fe5f5" },
   # Optionales Audit-Log (kann leer bleiben; nur fürs UI/Audit):
   { binding = "OPS",    id = "74e1d3dc6d84483b9454859750726be5" }
 ]

@@ -10,28 +10,106 @@ const CFG = {
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC4wEGGkZwyTDt1v",
   API_BASE: "https://inpinity.online/api/token",
 
-  // Nur echte Fallbacks, wenn API DOWN ist (wir überschreiben NICHT,
-  // wenn das Backend absichtlich null/leer liefert!)
+  // Nur echte Fallbacks, wenn API DOWN ist (wir überschreiben NICHT
+  // absichtlich gesetzte null/leer-Werte des Backends!)
   PRICE_WITH_NFT_FALLBACK: 0.0003141,
   PRICE_WITHOUT_NFT_FALLBACK: 0.003141,
 
   DEPOSIT_USDC_ATA_FALLBACK: "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
-  TGE_TS_FALLBACK: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 90
+  TGE_TS_FALLBACK: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 90,
+
+  // Tokenomics Fallbacks (falls /status sie nicht liefert)
+  SUPPLY_FALLBACK: 3141592653,
+  DISTR_FALLBACK_BPS: {
+    dist_presale_bps:        1000,
+    dist_dex_liquidity_bps:  2000,
+    dist_staking_bps:         700,
+    dist_ecosystem_bps:      2000,
+    dist_treasury_bps:       1500,
+    dist_team_bps:           1000,
+    dist_airdrop_nft_bps:    1000,
+    dist_buyback_reserve_bps: 800
+  }
 };
 
 /* ================ SOLANA / PHANTOM ================ */
 const { Connection } = solanaWeb3;
 const $ = (sel) => document.querySelector(sel);
 const short = (a) => (a?.slice(0, 4) + "…" + a?.slice(-4));
-function fmt(n, d = 2) { if (n == null || isNaN(n)) return "—"; return Number(n).toLocaleString("de-DE",{maximumFractionDigits:d}); }
-function fmt0(n) { return fmt(n, 0); }
-function pctFromBps(bps){ if (bps == null) return "—"; return (Number(bps)/100).toLocaleString("de-DE", {maximumFractionDigits:2}) + " %"; }
+function fmt(n, d = 2) { if (n == null || isNaN(n)) return "–"; return Number(n).toLocaleString("de-DE",{maximumFractionDigits:d}); }
+function fmti(n){ if (n == null || isNaN(n)) return "–"; return Number(n).toLocaleString("de-DE"); }
 function solscan(addr){ return `https://solscan.io/account/${addr}`; }
 function nowSec(){ return Math.floor(Date.now()/1000); }
-function toNum(x){ const n = Number(x); return Number.isFinite(n) ? n : null; }
-function fill(id, val){ const el = (typeof id === "string") ? $(id) : id; if (el) el.textContent = (val ?? "—"); }
 
-// UI-Refs
+/* ---------- Dynamische Hilfen ---------- */
+function el(id){ return document.getElementById(id); }
+function ensureTokenomicsSection(){
+  if (el("tokenomicsBox")) return;
+  const main = document.querySelector("main");
+  if (!main) return;
+  const sec = document.createElement("section");
+  sec.className = "card";
+  sec.id = "tokenomicsBox";
+  sec.innerHTML = `
+    <h2>Tokenomics</h2>
+    <div class="stats">
+      <div><b>Total Supply:</b> <span id="tokTotal">—</span></div>
+      <div><b>Presale-Allocation:</b> <span id="tokPresale">—</span></div>
+    </div>
+    <div style="overflow:auto;margin-top:.6rem">
+      <table id="tokTable" style="width:100%;border-collapse:collapse">
+        <thead><tr>
+          <th style="text-align:left;padding:.4rem;border-bottom:1px solid #234">Bucket</th>
+          <th style="text-align:right;padding:.4rem;border-bottom:1px solid #234">BPS</th>
+          <th style="text-align:right;padding:.4rem;border-bottom:1px solid #234">%</th>
+          <th style="text-align:right;padding:.4rem;border-bottom:1px solid #234">INPI</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  `;
+  main.appendChild(sec);
+}
+function renderTokenomics(supply, dist){
+  ensureTokenomicsSection();
+  const tTotal = el("tokTotal");
+  const tPres  = el("tokPresale");
+  const tbl    = el("tokTable")?.querySelector("tbody");
+  if (!tTotal || !tbl) return;
+
+  tTotal.textContent = fmti(supply);
+  tbl.innerHTML = "";
+
+  const rows = [
+    ["Presale",            dist.dist_presale_bps],
+    ["DEX Liquidity",      dist.dist_dex_liquidity_bps],
+    ["Staking",            dist.dist_staking_bps],
+    ["Ecosystem",          dist.dist_ecosystem_bps],
+    ["Treasury",           dist.dist_treasury_bps],
+    ["Team",               dist.dist_team_bps],
+    ["Airdrop (NFT)",      dist.dist_airdrop_nft_bps],
+    ["Buyback Reserve",    dist.dist_buyback_reserve_bps],
+  ].filter(([_, b]) => typeof b === "number");
+
+  let presaleInpi = 0;
+  for (const [name, bps] of rows){
+    const pct = bps/100; // BPS -> %
+    const inpi = Math.floor(supply * (bps/10000));
+    if (name === "Presale") presaleInpi = inpi;
+
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td style="padding:.4rem;border-bottom:1px solid #1c2836">${name}</td>
+      <td style="padding:.4rem;border-bottom:1px solid #1c2836;text-align:right">${fmti(bps)}</td>
+      <td style="padding:.4rem;border-bottom:1px solid #1c2836;text-align:right">${pct.toFixed(2)}%</td>
+      <td style="padding:.4rem;border-bottom:1px solid #1c2836;text-align:right">${fmti(inpi)}</td>
+    `;
+    tbl.appendChild(tr);
+  }
+  if (tPres) tPres.textContent = `${fmti(presaleInpi)} INPI (${(dist.dist_presale_bps/100).toFixed(2)}%)`;
+}
+
+/* ---------- UI-Refs ---------- */
 const btnConnect = $("#btnConnect");
 const walletAddr = $("#walletAddr");
 const usdcBal = $("#usdcBal");
@@ -46,9 +124,6 @@ const btnHowTo = $("#btnHowTo");
 const intentMsg = $("#intentMsg");
 const depositAddrEl = $("#depositAddr");
 const depositSolscanA = $("#depositSolscan");
-const depositOwnerEl = $("#depositOwner");
-const btnCopyDeposit = $("#btnCopyDeposit");
-const gateHint = $("#gateHint");
 
 // Pay-Area (Presale)
 const payArea = $("#payArea");
@@ -63,21 +138,6 @@ const earlyQR = $("#early-qr");
 const earlyExpect = $("#earlyExpected");
 const earlySig = $("#earlySig");
 const btnEarlyConfirm = $("#btnEarlyConfirm");
-
-// Tokenomics-Refs
-const tokSupply = $("#tokSupply");
-const tokRows = {
-  presale: { pct: $("#tokPresalePct"), qty: $("#tokPresaleQty") },
-  dex:     { pct: $("#tokDexPct"),     qty: $("#tokDexQty")     },
-  staking: { pct: $("#tokStakingPct"), qty: $("#tokStakingQty") },
-  eco:     { pct: $("#tokEcoPct"),     qty: $("#tokEcoQty")     },
-  treasury:{ pct: $("#tokTreasuryPct"),qty: $("#tokTreasuryQty")},
-  team:    { pct: $("#tokTeamPct"),    qty: $("#tokTeamQty")    },
-  airdrop: { pct: $("#tokAirdropPct"), qty: $("#tokAirdropQty") },
-  buyback: { pct: $("#tokBuybackPct"), qty: $("#tokBuybackQty") }
-};
-const govMultisigEl = $("#govMultisig");
-const timelockEl = $("#timelock");
 
 // Optionaler Badge bei Preiszeile
 let gateBadge = document.getElementById("gateBadge");
@@ -104,7 +164,6 @@ const STATE = {
   presale_state: "pre",
   tge_ts: null,
   deposit_ata: null,
-  deposit_owner: null,
 
   presale_min_usdc: null,
   presale_max_usdc: null,
@@ -123,18 +182,7 @@ const STATE = {
 
   // Tokenomics
   supply_total: null,
-  dist: {
-    presale: null,
-    dex: null,
-    staking: null,
-    eco: null,
-    treasury: null,
-    team: null,
-    airdrop: null,
-    buyback: null
-  },
-  governance_multisig: null,
-  timelock_seconds: null
+  dist_bps: {}
 };
 
 /* ---------- Preis/Erwartung ---------- */
@@ -143,9 +191,9 @@ function currentPriceUSDC() {
   return STATE.gate_ok ? STATE.price_with_nft_usdc : STATE.price_without_nft_usdc;
 }
 function calcExpectedInpi(usdc) {
-  if (!usdc || usdc <= 0) return "—";
+  if (!usdc || usdc <= 0) return "–";
   const price = currentPriceUSDC();
-  if (!price || price <= 0) return "—";
+  if (!price || price <= 0) return "–";
   const tokens = usdc / price;
   return fmt(tokens, 0) + " INPI";
 }
@@ -155,23 +203,13 @@ function updatePriceRow() {
   const wo = STATE.price_without_nft_usdc;
   const active = currentPriceUSDC();
 
-  const withTxt = (w && w > 0) ? Number(w).toFixed(6) + " USDC" : "—";
-  const woTxt   = (wo && wo > 0) ? Number(wo).toFixed(6) + " USDC" : "—";
-  const actTxt  = (active && active > 0) ? Number(active).toFixed(6) + " USDC" : "—";
+  const withTxt = (w && w > 0) ? Number(w).toFixed(6) + " USDC" : "–";
+  const woTxt   = (wo && wo > 0) ? Number(wo).toFixed(6) + " USDC" : "–";
+  const actTxt  = (active && active > 0) ? Number(active).toFixed(6) + " USDC" : "–";
   const badge = STATE.gate_ok ? "NFT ✓" : "NFT ✗";
 
   p0.textContent = `mit NFT: ${withTxt} • ohne NFT: ${woTxt} • dein aktiv: ${actTxt}`;
   if (gateBadge) gateBadge.textContent = `(${badge})`;
-
-  if (gateHint) {
-    if (!STATE.gate_ok && (STATE.price_without_nft_usdc == null || STATE.price_without_nft_usdc <= 0)) {
-      gateHint.textContent = "Nur mit NFT zugelassen (Gate aktiv).";
-      gateHint.style.display = "inline";
-    } else {
-      gateHint.textContent = "";
-      gateHint.style.display = "none";
-    }
-  }
 }
 
 /* ---------- Intent-Verfügbarkeit ---------- */
@@ -211,18 +249,10 @@ async function init() {
 
   updatePriceRow();
   updateIntentAvailability();
-  renderTokenomics();
 
   if (inpAmount && STATE.presale_min_usdc != null) inpAmount.min = String(STATE.presale_min_usdc);
   if (inpAmount && STATE.presale_max_usdc != null) inpAmount.max = String(STATE.presale_max_usdc);
   if (inpAmount && !inpAmount.step) inpAmount.step = "0.000001";
-
-  if (btnCopyDeposit) {
-    btnCopyDeposit.onclick = async ()=>{
-      if (!STATE.deposit_ata) return;
-      try { await navigator.clipboard.writeText(STATE.deposit_ata); alert("Adresse kopiert."); } catch { alert("Konnte nicht kopieren."); }
-    };
-  }
 
   if (window.solana?.isPhantom) {
     provider = window.solana;
@@ -260,6 +290,9 @@ async function init() {
 
   // Bonushinweis einmalig setzen
   setBonusNote();
+
+  // Tokenomics rendern
+  renderTokenomics(STATE.supply_total, STATE.dist_bps);
 }
 
 /* ---------- Bonus-Hinweis (3–7 %) ---------- */
@@ -290,7 +323,7 @@ function setBonusNote() {
 /* ---------- Status laden ---------- */
 async function refreshStatus(){
   try {
-    const r = await fetch(`${CFG.API_BASE}/status`, { headers: { "accept":"application/json" }});
+    const r = await fetch(`${CFG.API_BASE}/status?t=${Date.now()}`, { headers: { "accept":"application/json" }});
     const j = await r.json().catch(()=> ({}));
 
     STATE.rpc_url       = j?.rpc_url || CFG.RPC;
@@ -302,7 +335,6 @@ async function refreshStatus(){
 
     // Deposit-ATA (kann leer sein, dann Fallback NUR wenn API leer/kaputt wirkt)
     STATE.deposit_ata   = j?.deposit_usdc_ata || CFG.DEPOSIT_USDC_ATA_FALLBACK;
-    STATE.deposit_owner = j?.deposit_usdc_owner || null;
 
     // Limits direkt aus API (können null sein)
     STATE.presale_min_usdc = (typeof j?.presale_min_usdc === "number") ? j.presale_min_usdc : null;
@@ -327,24 +359,26 @@ async function refreshStatus(){
     STATE.early.flat_usdc = Number(ec.flat_usdc || 1);
     STATE.early.fee_dest_wallet = ec.fee_dest_wallet || STATE.deposit_ata || null;
 
-    // Tokenomics (falls Backend sie liefert)
-    STATE.supply_total = toNum(j?.supply_total);
-    STATE.dist.presale = toNum(j?.dist_presale_bps);
-    STATE.dist.dex     = toNum(j?.dist_dex_liquidity_bps);
-    STATE.dist.staking = toNum(j?.dist_staking_bps);
-    STATE.dist.eco     = toNum(j?.dist_ecosystem_bps);
-    STATE.dist.treasury= toNum(j?.dist_treasury_bps);
-    STATE.dist.team    = toNum(j?.dist_team_bps);
-    STATE.dist.airdrop = toNum(j?.dist_airdrop_nft_bps);
-    STATE.dist.buyback = toNum(j?.dist_buyback_reserve_bps);
-
-    STATE.governance_multisig = j?.governance_multisig || null;
-    STATE.timelock_seconds    = toNum(j?.timelock_seconds);
+    // Tokenomics aus Status (wenn vorhanden), sonst Fallbacks
+    const supply = Number(j?.supply_total || CFG.SUPPLY_FALLBACK);
+    const dist = {
+      dist_presale_bps:        numOr(CFG.DISTR_FALLBACK_BPS.dist_presale_bps, j?.dist_presale_bps),
+      dist_dex_liquidity_bps:  numOr(CFG.DISTR_FALLBACK_BPS.dist_dex_liquidity_bps, j?.dist_dex_liquidity_bps),
+      dist_staking_bps:        numOr(CFG.DISTR_FALLBACK_BPS.dist_staking_bps, j?.dist_staking_bps),
+      dist_ecosystem_bps:      numOr(CFG.DISTR_FALLBACK_BPS.dist_ecosystem_bps, j?.dist_ecosystem_bps),
+      dist_treasury_bps:       numOr(CFG.DISTR_FALLBACK_BPS.dist_treasury_bps, j?.dist_treasury_bps),
+      dist_team_bps:           numOr(CFG.DISTR_FALLBACK_BPS.dist_team_bps, j?.dist_team_bps),
+      dist_airdrop_nft_bps:    numOr(CFG.DISTR_FALLBACK_BPS.dist_airdrop_nft_bps, j?.dist_airdrop_nft_bps),
+      dist_buyback_reserve_bps:numOr(CFG.DISTR_FALLBACK_BPS.dist_buyback_reserve_bps, j?.dist_buyback_reserve_bps)
+    };
+    STATE.supply_total = supply;
+    STATE.dist_bps = dist;
 
     if (presaleState) presaleState.textContent = STATE.presale_state;
     updatePriceRow();
     updateIntentAvailability();
-    renderTokenomics();
+
+    renderTokenomics(STATE.supply_total, STATE.dist_bps);
   } catch (e) {
     console.error(e);
 
@@ -355,15 +389,18 @@ async function refreshStatus(){
     STATE.presale_state = "pre";
     STATE.tge_ts        = CFG.TGE_TS_FALLBACK;
     STATE.deposit_ata   = CFG.DEPOSIT_USDC_ATA_FALLBACK;
-    STATE.deposit_owner = null;
 
     STATE.price_with_nft_usdc    = CFG.PRICE_WITH_NFT_FALLBACK;
     STATE.price_without_nft_usdc = CFG.PRICE_WITHOUT_NFT_FALLBACK;
 
+    STATE.supply_total = CFG.SUPPLY_FALLBACK;
+    STATE.dist_bps = { ...CFG.DISTR_FALLBACK_BPS };
+
     if (presaleState) presaleState.textContent = "API offline";
     updatePriceRow();
     updateIntentAvailability();
-    renderTokenomics();
+
+    renderTokenomics(STATE.supply_total, STATE.dist_bps);
   }
 
   if (depositAddrEl) {
@@ -373,45 +410,12 @@ async function refreshStatus(){
       depositSolscanA.style.display = "inline";
     } else if (depositSolscanA) depositSolscanA.style.display = "none";
   }
-  if (depositOwnerEl) {
-    depositOwnerEl.textContent = STATE.deposit_owner ? short(STATE.deposit_owner) : "—";
-    if (STATE.deposit_owner) depositOwnerEl.setAttribute("title", STATE.deposit_owner);
-  }
   if (earlyBox) earlyBox.style.display = STATE.early.enabled ? "block" : "none";
 }
 
-/* ---------- Tokenomics render ---------- */
-function renderTokenomics(){
-  if (tokSupply) fill(tokSupply, STATE.supply_total != null ? fmt0(STATE.supply_total) + " INPI" : "—");
-
-  const calcQty = (bps)=>{
-    if (STATE.supply_total == null || bps == null) return null;
-    return Math.floor(STATE.supply_total * (Number(bps)/10000));
-  };
-
-  const rows = [
-    ["presale","dist_presale_bps"],
-    ["dex","dist_dex_liquidity_bps"],
-    ["staking","dist_staking_bps"],
-    ["eco","dist_ecosystem_bps"],
-    ["treasury","dist_treasury_bps"],
-    ["team","dist_team_bps"],
-    ["airdrop","dist_airdrop_nft_bps"],
-    ["buyback","dist_buyback_reserve_bps"]
-  ];
-
-  for (const [key] of rows){
-    const bps = STATE.dist[key];
-    const qty = calcQty(bps);
-    if (tokRows[key]) {
-      fill(tokRows[key].pct, pctFromBps(bps));
-      fill(tokRows[key].qty,  qty != null ? fmt0(qty) + " INPI" : "—");
-    }
-  }
-
-  if (govMultisigEl) fill(govMultisigEl, STATE.governance_multisig ? short(STATE.governance_multisig) : "—");
-  if (govMultisigEl && STATE.governance_multisig) govMultisigEl.title = STATE.governance_multisig || "";
-  if (timelockEl) fill(timelockEl, STATE.timelock_seconds != null ? STATE.timelock_seconds + " s" : "—");
+function numOr(def, maybe){
+  const n = Number(maybe);
+  return Number.isFinite(n) ? n : def;
 }
 
 /* ---------- Claim-Status (claimbar) ---------- */
@@ -425,7 +429,7 @@ async function refreshClaimStatus(){
   }catch(e){
     console.error(e);
     STATE.claimable_inpi = 0;
-    if (earlyExpect) earlyExpect.textContent = "—";
+    if (earlyExpect) earlyExpect.textContent = "–";
   }
 }
 
@@ -456,7 +460,7 @@ function onDisconnected(){
   if (inpiBal) inpiBal.textContent = "—";
   STATE.gate_ok = false;
   STATE.claimable_inpi = 0;
-  if (earlyExpect) earlyExpect.textContent = "—";
+  if (earlyExpect) earlyExpect.textContent = "–";
   updatePriceRow();
   updateIntentAvailability();
   clearInterval(POLL);
@@ -515,7 +519,6 @@ if (btnPresaleIntent) {
         msg_str = `INPI Presale Intent\nwallet=${pubkey.toBase58()}\namount_usdc=${usdc}\nts=${Date.now()}`;
         const enc = new TextEncoder().encode(msg_str);
 
-        // Phantom kann {signature} zurückgeben oder direkt Uint8Array
         let signed = await provider.signMessage(enc, "utf8").catch(async () => {
           try { return await provider.signMessage(enc); } catch { return null; }
         });
@@ -525,7 +528,7 @@ if (btnPresaleIntent) {
         }
       }
 
-      const r = await fetch(`${CFG.API_BASE}/presale/intent?format=json`, {
+      const r = await fetch(`${CFG.API_BASE}/presale/intent?format=json&t=${Date.now()}`, {
         method: "POST",
         headers: { "content-type": "application/json", "accept":"application/json" },
         body: JSON.stringify({ wallet: pubkey.toBase58(), amount_usdc: usdc, sig_b58, msg_str })
@@ -551,7 +554,7 @@ if (btnPresaleIntent) {
         setBonusNote();
       }
 
-      // Deposit-Infos aktualisieren
+      // Deposit-Infos aktualisieren (samt evtl. Owner-Pubkey)
       await refreshStatus();
     } catch (e) {
       console.error(e);
@@ -562,101 +565,3 @@ if (btnPresaleIntent) {
   });
 }
 
-/* ---------- EARLY CLAIM ($1 Fee) ---------- */
-async function startEarlyFlow(){
-  if (!pubkey) return alert("Bitte zuerst mit Phantom verbinden.");
-  if (!STATE.early.enabled) return alert("Early-Claim ist aktuell deaktiviert.");
-
-  await refreshClaimStatus();
-  const pending = Number(STATE.claimable_inpi || 0);
-  if (!pending) return alert("Kein vorgekaufter INPI-Betrag zum Early-Claim gefunden.");
-
-  if (earlyExpect) earlyExpect.textContent = fmt(pending, 0) + " INPI";
-
-  try {
-    const r = await fetch(`${CFG.API_BASE}/claim/early-intent`, {
-      method:"POST",
-      headers:{ "content-type":"application/json", "accept":"application/json" },
-      body: JSON.stringify({ wallet: pubkey.toBase58() })
-    });
-    const j = await r.json();
-    if (!r.ok || !j?.ok) throw new Error(j?.error || "early_intent_failed");
-
-    if (earlyArea) earlyArea.style.display = "block";
-    if (earlyQR && j.qr_url) { earlyQR.src = j.qr_url; earlyQR.style.display = "block"; }
-
-    if (earlyMsg) {
-      earlyMsg.textContent = "";
-      const p1 = document.createElement("p");
-      p1.textContent = `Sende jetzt ${STATE.early.flat_usdc} USDC (Fee) an die angezeigte Adresse (QR scannen oder Adresse kopieren).`;
-      const p2 = document.createElement("p");
-      p2.textContent = `Nach Bestätigung der Fee schreibst du die Transaktionssignatur unten ins Feld und bestätigst. Dann wird dein Early-Claim (${fmt(pending,0)} INPI) eingereiht und zeitnah ausgeführt.`;
-      earlyMsg.appendChild(p1);
-      earlyMsg.appendChild(p2);
-    }
-  } catch (e) {
-    console.error(e);
-    alert(`Early-Claim fehlgeschlagen:\n${e?.message || e}`);
-  }
-}
-
-// Fee-Tx-Signatur bestätigen → Worker prüft & queued Claim
-async function confirmEarlyFee(){
-  const sig = (earlySig?.value || "").trim();
-  if (!pubkey) return alert("Bitte zuerst mit Phantom verbinden.");
-  if (!sig) return alert("Bitte Fee-Transaktionssignatur einfügen.");
-
-  try{
-    const r = await fetch(`${CFG.API_BASE}/claim/confirm`, {
-      method:"POST",
-      headers:{ "content-type":"application/json", "accept":"application/json" },
-      body: JSON.stringify({ wallet: pubkey.toBase58(), fee_signature: sig })
-    });
-    const j = await r.json();
-    if (!r.ok || !j?.ok) throw new Error(j?.error || "confirm_failed");
-
-    alert("Danke! Fee bestätigt. Dein Early-Claim wurde eingereiht.");
-    if (earlySig) earlySig.value = "";
-    await refreshClaimStatus();
-  }catch(e){
-    console.error(e);
-    alert(`Bestätigung fehlgeschlagen:\n${e?.message || e}`);
-  }
-}
-
-/* ---------- Wallet-Balances ---------- */
-async function refreshBalances() {
-  if (!pubkey) return;
-  try {
-    const url = `${CFG.API_BASE}/wallet/balances?wallet=${pubkey.toBase58()}`;
-    const j = await fetch(url, { headers:{accept:"application/json"} }).then(r => r.json());
-    const u = Number(j?.usdc?.uiAmount ?? 0);
-    const i = Number(j?.inpi?.uiAmount ?? 0);
-
-    STATE.gate_ok = !!j?.gate_ok;
-    updatePriceRow();
-    updateIntentAvailability();
-
-    if (usdcBal) usdcBal.textContent = fmt(u, 6) + " USDC";
-    if (inpiBal) inpiBal.textContent = fmt(i, 2) + " INPI";
-
-    const usdcIn = Number(inpAmount?.value || "0");
-    if (expectedInpi) expectedInpi.textContent = calcExpectedInpi(usdcIn);
-  } catch (e) {
-    console.error(e);
-    if (usdcBal) usdcBal.textContent = "—";
-    if (inpiBal) inpiBal.textContent = "—";
-  }
-}
-
-/* ---------- bs58 Helper ---------- */
-function bs58Encode(bytes){
-  const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-  const BASE = BigInt(58);
-  let x = 0n; for (const b of bytes) x = (x << 8n) + BigInt(b);
-  let out = ""; while (x > 0n) { const mod = x % BASE; out = alphabet[Number(mod)] + out; x = x / BASE; }
-  let zeros = 0; for (const b of bytes) { if (b === 0) zeros++; else break; }
-  return "1".repeat(zeros) + out;
-}
-
-window.addEventListener("load", init);
