@@ -265,3 +265,11 @@ function secHeaders(){
 function secTextHeaders(){
   return { "content-type":"text/plain; charset=utf-8", "cache-control":"no-store", ...secHeaders() };
 }
+async function getPublicRpcUrl(env) {
+  const fromCfg = await env.CONFIG.get("public_rpc_url");
+  const fromVar = env.RPC_URL;
+  const fromHelius = env.HELIUS_API_KEY
+    ? `https://rpc.helius.xyz/?api-key=${env.HELIUS_API_KEY}`
+    : null;
+  return fromCfg || fromVar || fromHelius || "https://api.mainnet-beta.solana.com";
+}
