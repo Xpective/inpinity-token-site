@@ -7,7 +7,8 @@
 const CFG = {
   RPC: "https://inpinity.online/rpc",
   INPI_MINT: "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
-  USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  // ⚠️ Kanonische USDC-Adresse (Mainnet, C4wE)
+  USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC4wEGGkZwyTDt1v",
   API_BASE: "https://inpinity.online/api/token",
 
   // Fallback-Preise falls Server nichts liefert:
@@ -51,7 +52,7 @@ const btnPhantom = $("#btn-phantom");
 const btnSolflare = $("#btn-solflare");
 const btnSolpay = $("#btn-solpay");
 
-// Optional: kleines Badge neben Preis (wird dynamisch angelegt, falls nicht vorhanden)
+// Optional: kleines Badge neben Preis
 let gateBadge = document.getElementById("gateBadge");
 if (!gateBadge && p0 && p0.parentElement) {
   gateBadge = document.createElement("span");
@@ -84,13 +85,13 @@ const STATE = {
   price_with_nft_usdc: CFG.PRICE_WITH_NFT,
   price_without_nft_usdc: CFG.PRICE_WITHOUT_NFT,
 
-  // Gate (wird via /wallet/balances erkannt)
+  // Gate (falls Server liefert)
   gate_ok: false
 };
 
 /* ---------- Preis/Erwartung ---------- */
 function currentPriceUSDC() {
-  // aktiver Preis abhängig vom Gate
+  // aktiver Preis abhängig vom Gate (falls unbekannt → konservativ public)
   return STATE.gate_ok ? STATE.price_with_nft_usdc : STATE.price_without_nft_usdc;
 }
 function calcExpectedInpi(usdc) {
@@ -106,9 +107,7 @@ function updatePriceRow() {
   const active = currentPriceUSDC();
   const badge = STATE.gate_ok ? "NFT ✓" : "NFT ✗";
   p0.textContent = `mit NFT: ${Number(w).toFixed(6)} USDC • ohne NFT: ${Number(wo).toFixed(6)} USDC • dein aktiv: ${Number(active).toFixed(6)} USDC`;
-  if (gateBadge) {
-    gateBadge.textContent = `(${badge})`;
-  }
+  if (gateBadge) gateBadge.textContent = `(${badge})`;
 }
 
 /* ==================== INIT ==================== */
@@ -170,11 +169,16 @@ async function refreshStatus(){
     STATE.presale_min_usdc = j?.presale_min_usdc ?? null;
     STATE.presale_max_usdc = j?.presale_max_usdc ?? null;
 
-    // NEU: Preise vom Server (mit/ohne NFT), sonst Fallbacks
-    const w = Number(j?.price_with_nft_usdc);
-    const wo = Number(j?.price_without_nft_usdc);
-    STATE.price_with_nft_usdc = Number.isFinite(w) && w > 0 ? w : CFG.PRICE_WITH_NFT;
+    // Mapping der Server-Felder auf Tier-Preise:
+    // - presale_price_usdc  → Preis MIT NFT
+    // - public_price_usdc   → Preis OHNE NFT
+    const w = Number(j?.presale_price_usdc);
+    const wo = Number(j?.public_price_usdc);
+    STATE.price_with_nft_usdc    = Number.isFinite(w)  && w  > 0 ? w  : CFG.PRICE_WITH_NFT;
     STATE.price_without_nft_usdc = Number.isFinite(wo) && wo > 0 ? wo : CFG.PRICE_WITHOUT_NFT;
+
+    // Optional: falls der Server schon Gate-Info liefert
+    if (typeof j?.gate_ok === "boolean") STATE.gate_ok = j.gate_ok;
 
     presaleState.textContent = STATE.presale_state;
     updatePriceRow();
@@ -285,7 +289,6 @@ btnPresaleIntent.addEventListener("click", async () => {
       body: JSON.stringify({ wallet: pubkey.toBase58(), amount_usdc: usdc, sig_b58, msg_str })
     });
 
-    // --- robust: erst Text lesen, dann JSON versuchen ---
     const raw = await r.text();
     if (!r.ok) throw new Error(raw || "Intent fehlgeschlagen");
 
@@ -353,7 +356,7 @@ btnPresaleIntent.addEventListener("click", async () => {
   }
 });
 
-/* ---------- Wallet-Balances über API (inkl. Gate) ---------- */
+/* ---------- Wallet-Balances über API ---------- */
 async function refreshBalances() {
   if (!pubkey) return;
   try {
@@ -362,8 +365,8 @@ async function refreshBalances() {
     const u = Number(j?.usdc?.uiAmount ?? 0);
     const i = Number(j?.inpi?.uiAmount ?? 0);
 
-    // Gate-Ergebnis vom Server (Snapshot „jetzt“)
-    STATE.gate_ok = !!j?.gate_ok;
+    // Falls API gate_ok liefert, übernehmen; sonst bleibt der konservative Default
+    if (typeof j?.gate_ok === "boolean") STATE.gate_ok = j.gate_ok;
     updatePriceRow();
 
     usdcBal.textContent = fmt(u, 6) + " USDC";
@@ -376,7 +379,6 @@ async function refreshBalances() {
     console.error(e);
     usdcBal.textContent = "—";
     inpiBal.textContent = "—";
-    // bei Fehler Gate neutral lassen (keine falsche Anzeige)
   }
 }
 
