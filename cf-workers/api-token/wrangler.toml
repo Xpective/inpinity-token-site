@@ -13,9 +13,9 @@ kv_namespaces = [
 ]
 
 [vars]
-# NICHT setzen: RPC_URL (wir steuern über CONFIG.public_rpc_url oder HELIUS_API_KEY)
-# Optionales NFT-Gate (leer lassen, wenn (noch) nicht genutzt)
-GATE_MINT = ""
+# Gate NICHT hier setzen, wenn du es im Admin pflegst:
+# GATE_COLLECTION = ""
+# GATE_MINT       = ""
 
 # Input-Grenzen
 PRESALE_MIN_USDC = "5"
