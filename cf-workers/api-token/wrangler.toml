@@ -7,19 +7,16 @@ routes = [
 ]
 
 kv_namespaces = [
-  { binding = "CONFIG",     id = "a82cb91c589b4b1a8c786807a49fe5f5"  },
-  { binding = "PRESALE",    id = "c7fe71ba6bd54e2a9ce76ed9c726a75d" },
-  { binding = "INPI_CLAIMS",id = "485fc6ed252b445ba8ca18aaa9038e5c" }
+  { binding = "CONFIG",      id = "a82cb91c589b4b1a8c786807a49fe5f5"  },
+  { binding = "PRESALE",     id = "c7fe71ba6bd54e2a9ce76ed9c726a75d" },
+  { binding = "INPI_CLAIMS", id = "485fc6ed252b445ba8ca18aaa9038e5c" }
 ]
 
 [vars]
-# dein bestehender RPC-Proxy:
-RPC_URL = "https://api.mainnet-beta.solana.com"
-
-# optionales Gate: nur wer dieses NFT (SPL Mint) hält, darf Presale
-# leer lassen, wenn du (noch) nicht gatest
+# NICHT setzen: RPC_URL (wir steuern über CONFIG.public_rpc_url oder HELIUS_API_KEY)
+# Optionales NFT-Gate (leer lassen, wenn (noch) nicht genutzt)
 GATE_MINT = ""
 
-# Input-Grenzen (Strings -> Number() im Code)
+# Input-Grenzen
 PRESALE_MIN_USDC = "5"
 PRESALE_MAX_USDC = "25000"

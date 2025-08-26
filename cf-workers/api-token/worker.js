@@ -1,8 +1,7 @@
-// INPI Token API (mit Deposit-Balance + Wallet-Balances)
-// KV-Bindings:
-//  - CONFIG, PRESALE, INPI_CLAIMS
-// Vars:
-//  - RPC_URL, GATE_MINT, PRESALE_MIN_USDC, PRESALE_MAX_USDC
+// INPI Token API (Deposit-Balance, Wallet-Balances, Intent)
+// KV-Bindings: CONFIG, PRESALE, INPI_CLAIMS
+// Vars (optional): GATE_MINT, PRESALE_MIN_USDC, PRESALE_MAX_USDC
+// Secrets (optional): HELIUS_API_KEY
 
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
@@ -47,8 +46,8 @@ export default {
           ok: true,
           address: depo,
           mint: USDC_MINT,
-          amount: v.amount,                // string (basis-einheiten, 10^decimals)
-          ui_amount: v.uiAmount,           // number
+          amount: v.amount,                 // string (Basis-Einheiten)
+          ui_amount: v.uiAmount,            // number
           ui_amount_string: v.uiAmountString, // string
           decimals: v.decimals,
           updated_at: Date.now()
@@ -71,8 +70,8 @@ export default {
         return J({
           ok: true,
           wallet,
-          usdc,           // { amount, decimals, uiAmount, uiAmountString }
-          inpi,           // ggf. null wenn INPI_MINT nicht gesetzt
+          usdc,   // { amount, decimals, uiAmount, uiAmountString }
+          inpi,   // ggf. null, wenn INPI_MINT nicht gesetzt
           updated_at: Date.now()
         });
       }
@@ -154,7 +153,8 @@ async function readPublicConfig(env) {
     "presale_price_usdc",
     "public_price_usdc",
     "presale_deposit_usdc",
-    "cap_per_wallet_usdc"
+    "cap_per_wallet_usdc",
+    "public_rpc_url"
   ];
   const out = {};
   await Promise.all(keys.map(async (k) => (out[k] = await env.CONFIG.get(k))));
@@ -172,16 +172,18 @@ async function readPublicConfig(env) {
   return out;
 }
 
+// ---- EINZIGE Quelle der Wahrheit für RPC-URL (CONFIG > VAR > SECRET > Default)
 async function getPublicRpcUrl(env) {
   try {
-    const fromCfg = await env.CONFIG.get("public_rpc_url");
-    return fromCfg || env.RPC_URL || "https://api.mainnet-beta.solana.com";
-  } catch {
-    return env.RPC_URL || "https://api.mainnet-beta.solana.com";
-  }
+    const fromCfg = await env.CONFIG.get("public_rpc_url");   // remote KV override
+    if (fromCfg) return fromCfg;
+  } catch {}
+  if (env.RPC_URL) return env.RPC_URL;                        // [vars] optional
+  if (env.HELIUS_API_KEY) return `https://rpc.helius.xyz/?api-key=${env.HELIUS_API_KEY}`; // secret fallback
+  return "https://api.mainnet-beta.solana.com";               // letzter Fallback
 }
 
-// ------ WICHTIG: robustes JSON-Parsing (fix für "Unexpected end of JSON input")
+// Robustes JSON-RPC: Text lesen, klarer Fehler wenn HTML/leer/blockiert
 async function rpcCall(rpcUrl, method, params) {
   const body = { jsonrpc: "2.0", id: 1, method, params };
   const r = await fetch(rpcUrl, {
@@ -190,10 +192,17 @@ async function rpcCall(rpcUrl, method, params) {
     body: JSON.stringify(body)
   });
 
-  const txt = await r.text();               // erst Text lesen
+  const txt = await r.text();
+
+  if (!r.ok) {
+    // häufiges Problem: Upstream blockt → liefert HTML/Text
+    const head = txt.trim().slice(0, 160);
+    throw new Error(`rpc_http_${r.status}: ${head}`);
+  }
+
   let j;
-  try { j = JSON.parse(txt); }              // dann sicher parsen
-  catch (e) { throw new Error(`rpc_bad_json: ${txt.slice(0,120)}`); }
+  try { j = JSON.parse(txt); }
+  catch (e) { throw new Error(`rpc_bad_json: ${txt.trim().slice(0,160)}`); }
 
   if (j.error) throw new Error(j.error?.message || "rpc_error");
   if (!("result" in j)) throw new Error("rpc_no_result");
@@ -231,7 +240,9 @@ async function passesNftGate(env, owner, gateMint) {
       if (amt > 0) return true;
     }
     return false;
-  } catch { return true; } // bei RPC-Hickups nicht blocken
+  } catch {
+    return true; // keine harten False-Positives bei temporären RPC-Issues
+  }
 }
 
 function makeSolanaPayUrl({ to, amount, splToken, label, message }) {
@@ -250,7 +261,7 @@ async function isJson(req){ return (req.headers.get("content-type")||"").toLower
 function J(obj, status=200, extra={}) {
   return new Response(JSON.stringify(obj), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control":"no-store", ...secHeaders(), ...extra }
+    headers: { "content-type":"application/json; charset=utf-8", "cache-control":"no-store", ...secHeaders(), ...extra }
   });
 }
 function secHeaders(){
@@ -264,12 +275,4 @@ function secHeaders(){
 }
 function secTextHeaders(){
   return { "content-type":"text/plain; charset=utf-8", "cache-control":"no-store", ...secHeaders() };
-}
-async function getPublicRpcUrl(env) {
-  const fromCfg = await env.CONFIG.get("public_rpc_url");
-  const fromVar = env.RPC_URL;
-  const fromHelius = env.HELIUS_API_KEY
-    ? `https://rpc.helius.xyz/?api-key=${env.HELIUS_API_KEY}`
-    : null;
-  return fromCfg || fromVar || fromHelius || "https://api.mainnet-beta.solana.com";
 }
