@@ -1,10 +1,10 @@
-// INPI Admin Worker (Basic + optional TOTP, Cron-Proxies, Config-API)
+// INPI Admin Worker (Basic + optional TOTP, Cron-Proxies, Config-API) – Allow-All ready
 // Bindings/Secrets:
 // - KV: CONFIG (required), OPS (optional für Audit)
 // - Secrets: ADMIN_USER, ADMIN_PASS
 // - Optional Secrets: ADMIN_TOTP_SECRET, ADMIN_TOTP_PERIOD, ADMIN_TOTP_WINDOW
 // - ENV/Secret: CRON_BASE (z.B. https://inpinity.online/cron), OPS_API_KEY, OPS_HMAC_ALGO
-// - Optional: IP_ALLOWLIST (CSV), CONFIG_KEYS (CSV Whitelist)
+// - Optional: IP_ALLOWLIST (CSV), CONFIG_KEYS (CSV Whitelist), CONFIG_ALLOW_ALL ("true"/"false")
 
 export default {
   async fetch(req, env) {
@@ -40,22 +40,34 @@ export default {
     if (req.method === "GET" && (p === "/admin" || p === "/admin/")) return ui(env);
 
     // -------- CONFIG API --------
+
+    // Liste erlaubter Keys (oder alle Keys bei Allow-All)
+    if (req.method === "GET" && p === "/admin/config/keys") {
+      const wl = getConfigKeys(env);
+      if (wl[0] === "*") {
+        const all = await listAllConfigKeys(env, { cap: 2000 });
+        return J({ ok: true, allow_all: true, keys: all });
+      }
+      return J({ ok: true, allow_all: false, keys: wl });
+    }
+
+    // Dump/Read
     if (req.method === "GET" && p === "/admin/config") {
       const qKey = url.searchParams.get("key");
       if (qKey) {
         const v = await env.CONFIG.get(qKey);
-        return J({ ok: true, key: qKey, value: v });
+        return J({ ok: true, allow_all: isAllowAll(env), key: qKey, value: v });
       }
-      const keys = getConfigKeys(env);
+      let keys = getConfigKeys(env);
+      const allowAll = keys[0] === "*";
+      if (allowAll) keys = await listAllConfigKeys(env, { cap: 2000 });
+
       const out = {};
       await Promise.all(keys.map(async (k) => (out[k] = await env.CONFIG.get(k))));
-      return J({ ok: true, keys, values: out });
+      return J({ ok: true, allow_all: allowAll, keys, values: out });
     }
 
-    if (req.method === "GET" && p === "/admin/config/keys") {
-      return J({ ok: true, keys: getConfigKeys(env) });
-    }
-
+    // Set
     if (req.method === "POST" && p === "/admin/config/set") {
       if (!(await requireJson(req))) return badCT();
       const { key, value } = await req.json().catch(() => ({}));
@@ -65,18 +77,23 @@ export default {
       return J({ ok: true });
     }
 
+    // Setmany
     if (req.method === "POST" && p === "/admin/config/setmany") {
       if (!(await requireJson(req))) return badCT();
       const { entries } = await req.json().catch(() => ({}));
       if (!entries || typeof entries !== "object") return J({ ok: false, error: "entries_object_required" }, 400);
-      for (const [k] of Object.entries(entries)) {
-        if (!keyAllowed(env, k)) return J({ ok: false, error: `key_not_allowed:${k}` }, 403);
+
+      if (!isAllowAll(env)) {
+        for (const [k] of Object.entries(entries)) {
+          if (!keyAllowed(env, k)) return J({ ok: false, error: `key_not_allowed:${k}` }, 403);
+        }
       }
       await Promise.all(Object.entries(entries).map(([k, v]) => env.CONFIG.put(String(k), String(v ?? ""))));
       await audit(env, "config_setmany", { count: Object.keys(entries).length });
       return J({ ok: true });
     }
 
+    // Delete
     if (req.method === "POST" && p === "/admin/config/delete") {
       if (!(await requireJson(req))) return badCT();
       const { key } = await req.json().catch(() => ({}));
@@ -86,11 +103,15 @@ export default {
       return J({ ok: true });
     }
 
+    // Export
     if (req.method === "GET" && p === "/admin/config/export") {
-      const keys = getConfigKeys(env);
+      let keys = getConfigKeys(env);
+      const allowAll = keys[0] === "*";
+      if (allowAll) keys = await listAllConfigKeys(env, { cap: 5000 });
+
       const out = {};
       await Promise.all(keys.map(async (k) => (out[k] = await env.CONFIG.get(k))));
-      return new Response(JSON.stringify({ ts: Date.now(), values: out }, null, 2), {
+      return new Response(JSON.stringify({ ts: Date.now(), allow_all: allowAll, values: out }, null, 2), {
         headers: {
           "content-type": "application/json",
           "content-disposition": "attachment; filename=inpi-config-export.json",
@@ -99,16 +120,27 @@ export default {
       });
     }
 
+    // Import
     if (req.method === "POST" && p === "/admin/config/import") {
       if (!(await requireJson(req))) return badCT();
       const { values } = await req.json().catch(() => ({}));
       if (!values || typeof values !== "object") return J({ ok: false, error: "values_object_required" }, 400);
-      const allowed = getConfigKeys(env);
+
+      const wl = getConfigKeys(env);
+      const allowAll = wl[0] === "*";
       const write = {};
-      for (const [k, v] of Object.entries(values)) if (allowed.includes(k)) write[k] = v;
+
+      if (allowAll) {
+        // alles durchlassen
+        for (const [k, v] of Object.entries(values)) write[k] = v;
+      } else {
+        // nur Whitelist
+        for (const [k, v] of Object.entries(values)) if (wl.includes(k)) write[k] = v;
+      }
+
       await Promise.all(Object.entries(write).map(([k, v]) => env.CONFIG.put(String(k), String(v ?? ""))));
-      await audit(env, "config_import", { count: Object.keys(write).length });
-      return J({ ok: true, written: Object.keys(write).length });
+      await audit(env, "config_import", { count: Object.keys(write).length, allow_all: allowAll });
+      return J({ ok: true, allow_all: allowAll, written: Object.keys(write).length });
     }
 
     // -------- CRON PROXIES (mit Bearer + HMAC) --------
@@ -138,7 +170,7 @@ export default {
     }
 
     // Health
-    if (req.method === "GET" && p === "/admin/health") return J({ ok: true, now: Date.now() });
+    if (req.method === "GET" && p === "/admin/health") return J({ ok: true, now: Date.now(), allow_all: isAllowAll(env) });
 
     return new Response("Not found", { status: 404, headers: secHeaders() });
   }
@@ -164,7 +196,7 @@ function needsOtp(path) {
 
 /* --------------------- Config Keys --------------------- */
 /* Falls ENV.CONFIG_KEYS nicht gesetzt ist, verwenden wir eine
-   umfangreiche Default-Whitelist (deine bestehenden Keys + neue Keys). */
+   umfangreiche Default-Whitelist (bestehende Keys + neue Keys). */
 const DEFAULT_KEYS = [
   // Core / Phasen / Preise / Wallets / RPC
   "INPI_MINT",
@@ -258,13 +290,36 @@ const DEFAULT_KEYS = [
   "dist_buyback_reserve_bps"
 ];
 
+// Allow-All Umschalter
+function isAllowAll(env) {
+  const yes = String(env.CONFIG_ALLOW_ALL || "").toLowerCase() === "true";
+  const star = (env.CONFIG_KEYS || "").trim() === "*";
+  return yes || star;
+}
 function getConfigKeys(env) {
   const csv = (env.CONFIG_KEYS || "").trim();
+  const allowAll = isAllowAll(env);
+  if (allowAll || csv === "*") return ["*"]; // Allow-All Modus
   if (!csv) return DEFAULT_KEYS;
   return csv.split(",").map((s) => s.trim()).filter(Boolean);
 }
 function keyAllowed(env, k) {
-  return getConfigKeys(env).includes(String(k));
+  const keys = getConfigKeys(env);
+  if (keys.length && keys[0] === "*") return true; // Allow-All -> alles erlaubt
+  return keys.includes(String(k));
+}
+
+// Alle Keys aus KV listen (für Allow-All)
+async function listAllConfigKeys(env, { prefix = "", cap = 1000 } = {}) {
+  let cursor = undefined;
+  const found = [];
+  while (found.length < cap) {
+    const res = await env.CONFIG.list({ prefix, cursor });
+    (res.keys || []).forEach(k => found.push(k.name));
+    if (!res.list_complete && res.cursor) cursor = res.cursor;
+    else break;
+  }
+  return found;
 }
 
 /* --------------------- Audit (optional) --------------------- */
@@ -413,12 +468,15 @@ input[type="number"]{ width:120px }
 </header>
 <main>
   <section class="card">
-    <h2>Config bearbeiten</h2>
+    <div style="display:flex;align-items:baseline;gap:.6rem">
+      <h2 style="margin:0">Config bearbeiten</h2>
+      <small id="wlState" class="muted"></small>
+    </div>
     <div class="grid">
       <label>Key</label>
       <div>
         <select id="key"></select>
-        <small class="muted">z.B. <code>gate_collection</code>, <code>public_mint_price_usdc</code>, <code>early_claim_enabled</code>, <code>public_rpc_url</code></small>
+        <small class="muted">z.B. <code>gate_collection</code>, <code>tier_nft_price_usdc</code>, <code>early_claim_enabled</code>, <code>public_rpc_url</code></small>
       </div>
       <label>Value</label>
       <textarea id="val" rows="2" placeholder="Wert (String)"></textarea>
@@ -430,7 +488,7 @@ input[type="number"]{ width:120px }
     </div>
     <p class="muted" style="margin-top:.6rem">
       Hinweis: Für dein NFT-Gate ist <b>gate_collection</b> = <code>6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ</code> korrekt.
-      <br/>Child-NFTs (einzelne Asset/Mint IDs) sind ebenfalls zulässig. Mehrere Werte via Komma.
+      <br/>Child-NFTs (einzelne Asset/Mint IDs) sind ebenfalls zulässig (mehrere via Komma).
       <br/>Early-Claim: <code>early_claim_enabled = true</code>. Separater Fee-ATA: <code>early_fee_usdc_ata</code>.
     </p>
   </section>
@@ -442,7 +500,7 @@ input[type="number"]{ width:120px }
       <input type="file" id="file" accept="application/json"/>
       <button id="btnImport" class="secondary">Import</button>
     </div>
-    <p class="muted">Es werden nur erlaubte Keys geschrieben (Whitelist / ENV.CONFIG_KEYS).</p>
+    <p class="muted">Bei Allow-All werden <b>alle</b> Keys exportiert/importiert; sonst nur Whitelist.</p>
   </section>
 
   <section class="card">
@@ -515,8 +573,10 @@ async function jfetch(url, opt={}){
 async function loadKeys(){
   const { j } = await jfetch('/admin/config/keys');
   const sel = document.getElementById('key');
+  const wlState = document.getElementById('wlState');
   sel.innerHTML='';
   (j?.keys||[]).forEach(k=>{ const o=document.createElement('option'); o.value=k; o.textContent=k; sel.appendChild(o); });
+  wlState.textContent = j?.allow_all ? 'Whitelist: OFF (Allow-All aktiv)' : 'Whitelist: ON';
 }
 async function loadDump(){
   const { j } = await jfetch('/admin/config');
