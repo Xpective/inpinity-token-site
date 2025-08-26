@@ -8,13 +8,8 @@
 //   ZUSATZ (für Preis-Tiers): tier_nft_price_usdc, tier_public_price_usdc, public_mint_price_usdc
 
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC4wEGGkZwyTDt1v";
-const QR_SVC = "https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=";
+const QR_SVC    = "https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=";
 const EARLY_FLAT_USDC = 1; // $1 Fee
-
-function wantsJson(req, url) {
-  const accept = (req.headers.get("accept") || "").toLowerCase();
-  return url.searchParams.get("format") === "json" || accept.includes("application/json");
-}
 
 export default {
   async fetch(req, env) {
@@ -29,10 +24,21 @@ export default {
 
       // ---- STATUS (public)
       if (req.method === "GET" && p === "/api/token/status") {
-        const cfg = await readPublicConfig(env);
+        const cfg     = await readPublicConfig(env);
         const rpc_url = await getPublicRpcUrl(env);
-        const early = await getEarlyConfig(env);
-        const feeDest = cfg.early_fee_usdc_ata || cfg.presale_deposit_usdc || "";
+        const early   = await getEarlyConfig(env);
+
+        const depoAta = cfg.presale_deposit_usdc || "";
+        let depoOwner = "";
+        if (isAddress(depoAta)) {
+          try { depoOwner = await getTokenAccountOwner(rpc_url, depoAta) || ""; } catch {}
+        }
+
+        const feeAta = cfg.early_fee_usdc_ata || cfg.presale_deposit_usdc || "";
+        let feeOwner = "";
+        if (isAddress(feeAta)) {
+          try { feeOwner = await getTokenAccountOwner(rpc_url, feeAta) || ""; } catch {}
+        }
 
         // Preis-Tiers: bevorzugt tier_* Keys; Fallbacks auf public/presale
         const priceWith =
@@ -43,7 +49,7 @@ export default {
         const priceWithout =
           toNumOrNull(cfg.tier_public_price_usdc) ??
           toNumOrNull(cfg.public_price_usdc) ??
-          null; // absichtlich kein automatisches *10
+          null;
 
         return J({
           rpc_url,
@@ -60,7 +66,9 @@ export default {
           price_with_nft_usdc:  priceWith,
           price_without_nft_usdc: priceWithout,
 
-          deposit_usdc_ata:   cfg.presale_deposit_usdc || "",
+          // Deposit
+          deposit_usdc_ata:   depoAta,
+          deposit_usdc_owner: depoOwner || null, // <-- NEU: Owner fürs Frontend
           cap_per_wallet_usdc: toNumOrNull(cfg.cap_per_wallet_usdc),
           presale_min_usdc: toNumOrNull(env.PRESALE_MIN_USDC),
           presale_max_usdc: toNumOrNull(env.PRESALE_MAX_USDC),
@@ -69,7 +77,7 @@ export default {
           early_claim: {
             enabled: early.enabled,
             flat_usdc: EARLY_FLAT_USDC,
-            fee_dest_wallet: feeDest
+            fee_dest_wallet: feeOwner || ""
           },
           early_claim_fee_bps: early.fee_bps,
           wait_bonus_bps: early.bonus_bps,
@@ -80,7 +88,7 @@ export default {
 
       // ---- DEPOSIT BALANCE (public)
       if (req.method === "GET" && p === "/api/token/deposit/balance") {
-        const cfg = await readPublicConfig(env);
+        const cfg  = await readPublicConfig(env);
         const depo = cfg.presale_deposit_usdc || "";
         if (!isAddress(depo)) return J({ ok:false, error:"deposit_not_ready" }, 503);
 
@@ -107,10 +115,10 @@ export default {
           cfg.INPI_MINT ? getSplBalance(rpc, wallet, cfg.INPI_MINT) : Promise.resolve(null)
         ]);
 
-        // Gate prüfen: bevorzugt ADMIN/CONFIG, Fallback ENV
+        // Gate prüfen: zuerst Collection (DAS), sonst Mint
         let gate_ok = true;
-        const gateCollection = String(cfg.gate_collection || env.GATE_COLLECTION || "").trim();
-        const gateMint       = String(cfg.gate_mint       || env.GATE_MINT       || "").trim();
+        const gateCollection = String(env.GATE_COLLECTION || "").trim();
+        const gateMint = String(env.GATE_MINT || "").trim();
         if (gateCollection) {
           gate_ok = await passesCollectionGate(env, wallet, gateCollection);
         } else if (gateMint) {
@@ -144,14 +152,12 @@ export default {
         const cap = toNumOrNull(cfg.cap_per_wallet_usdc);
         if (cap != null && amount > cap) return J({ ok:false, error:"over_cap", cap_per_wallet_usdc: cap }, 400);
 
-        const depo = cfg.presale_deposit_usdc || "";
-        if (!isAddress(depo)) return J({ ok:false, error:"deposit_not_ready" }, 503);
+        const depoAta = cfg.presale_deposit_usdc || "";
+        if (!isAddress(depoAta)) return J({ ok:false, error:"deposit_not_ready" }, 503);
 
-        // Gate durchsetzen (bevorzugt ADMIN/CONFIG, Fallback ENV)
-        const cfgForGate = cfg; // readPublicConfig(env) oben bereits geladen
-        const gateCollection = String(cfgForGate.gate_collection || env.GATE_COLLECTION || "").trim();
-        const gateMint       = String(cfgForGate.gate_mint       || env.GATE_MINT       || "").trim();
-
+        // Gate durchsetzen (nur wenn gesetzt)
+        const gateCollection = String(env.GATE_COLLECTION || "").trim();
+        const gateMint = String(env.GATE_MINT || "").trim();
         if (gateCollection) {
           const ok = await passesCollectionGate(env, wallet, gateCollection);
           if (!ok) return J({ ok:false, error:"gate_denied" }, 403);
@@ -160,23 +166,31 @@ export default {
           if (!ok) return J({ ok:false, error:"gate_denied" }, 403);
         }
 
+        // Solana Pay + QR – unbedingt Owner als Empfänger verwenden!
+        const rpc = await getPublicRpcUrl(env);
+        let depoOwner = await getTokenAccountOwner(rpc, depoAta).catch(()=>null);
+        if (!isAddress(depoOwner)) depoOwner = null; // Fallback nur im Notfall
+        const sp = makeSolanaPayUrl({
+          to: depoOwner || depoAta, // Owner bevorzugt, zur Not ATA
+          amount, splToken: USDC_MINT,
+          label: "Inpinity Presale",
+          message: "INPI Presale Contribution"
+        });
+        const phantom = `https://phantom.app/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
+        const solflare = `https://solflare.com/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
+        const qr_url = `${QR_SVC}${encodeURIComponent(sp)}`;
+
         // Intent speichern (30 Tage TTL)
         const key = `intent:${Date.now()}:${wallet}`;
         await env.PRESALE.put(key, JSON.stringify({ wallet, amount_usdc:amount, sig_b58, msg_str, ts:Date.now() }),
                               { expirationTtl: 60*60*24*30 });
-
-        // Solana Pay + QR
-        const sp = makeSolanaPayUrl({ to: depo, amount, splToken: USDC_MINT, label: "Inpinity Presale", message: "INPI Presale Contribution" });
-        const phantom = `https://phantom.app/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
-        const solflare = `https://solflare.com/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
-        const qr_url = `${QR_SVC}${encodeURIComponent(sp)}`;
 
         // Erwartete Zuteilung (nur Info – presale_price_usdc)
         const price = toNumOrNull(cfg.presale_price_usdc);
         const expected_inpi = price ? Math.floor(amount / price) : null;
 
         return J({ ok:true, wallet, amount_usdc:amount, expected_inpi,
-          deposit_usdc_ata:depo, usdc_mint:USDC_MINT,
+          deposit_usdc_ata:depoAta, usdc_mint:USDC_MINT,
           solana_pay_url:sp, phantom_universal_url:phantom, solflare_universal_url:solflare,
           qr_url, label:"INPI Presale", message:"INPI Presale Contribution", updated_at:Date.now() });
       }
@@ -187,7 +201,7 @@ export default {
         return reconcileOne(req, env);
       }
 
-      // ---- CLAIM STATUS (public)  (+ Early/Bonus-Vorschau)
+      // ---- CLAIM STATUS (public)
       if (req.method === "GET" && p === "/api/token/claim/status") {
         const wallet = (url.searchParams.get("wallet") || "").trim();
         if (!isAddress(wallet)) return J({ ok:false, error:"bad_wallet" }, 400);
@@ -223,7 +237,7 @@ export default {
         });
       }
 
-      // ---- EARLY-CLAIM QUOTE (bps-Modell – bleibt verfügbar)
+      // ---- EARLY-CLAIM QUOTE (bps-Modell)
       if (req.method === "GET" && p === "/api/token/claim/early/quote") {
         const wallet = (url.searchParams.get("wallet") || "").trim();
         if (!isAddress(wallet)) return J({ ok:false, error:"bad_wallet" }, 400);
@@ -252,18 +266,23 @@ export default {
         if (!early.enabled) return J({ ok:false, error:"early_disabled" }, 403);
 
         const cfg = await readPublicConfig(env);
-        const dest = cfg.early_fee_usdc_ata || cfg.presale_deposit_usdc || "";
-        if (!isAddress(dest)) return J({ ok:false, error:"fee_dest_not_ready" }, 503);
+        const destAta = cfg.early_fee_usdc_ata || cfg.presale_deposit_usdc || "";
+        if (!isAddress(destAta)) return J({ ok:false, error:"fee_dest_not_ready" }, 503);
+
+        const rpc = await getPublicRpcUrl(env);
+        let destOwner = await getTokenAccountOwner(rpc, destAta).catch(()=>null);
+        if (!isAddress(destOwner)) destOwner = null;
 
         const sp = makeSolanaPayUrl({
-          to: dest, amount: EARLY_FLAT_USDC, splToken: USDC_MINT,
+          to: destOwner || destAta,
+          amount: EARLY_FLAT_USDC, splToken: USDC_MINT,
           label: "INPI Early Claim Fee", message: "INPI Early Claim Fee"
         });
-        const phantom = `https://phantom.app/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
+        const phantom  = `https://phantom.app/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
         const solflare = `https://solflare.com/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
-        const qr_url = `${QR_SVC}${encodeURIComponent(sp)}`;
+        const qr_url   = `${QR_SVC}${encodeURIComponent(sp)}`;
 
-        return J({ ok:true, wallet, dest_wallet: dest, amount_usdc: EARLY_FLAT_USDC,
+        return J({ ok:true, wallet, dest_wallet: destOwner || destAta, amount_usdc: EARLY_FLAT_USDC,
           solana_pay_url: sp, phantom_universal_url: phantom, solflare_universal_url: solflare, qr_url });
       }
 
@@ -284,8 +303,8 @@ export default {
         }
 
         const cfg = await readPublicConfig(env);
-        const dest = cfg.early_fee_usdc_ata || cfg.presale_deposit_usdc || "";
-        if (!isAddress(dest)) return J({ ok:false, error:"fee_dest_not_ready" }, 503);
+        const destAta = cfg.early_fee_usdc_ata || cfg.presale_deposit_usdc || "";
+        if (!isAddress(destAta)) return J({ ok:false, error:"fee_dest_not_ready" }, 503);
 
         // Tx prüfen: >= $1 USDC vom wallet -> dest ATA
         const rpc = await getPublicRpcUrl(env);
@@ -298,7 +317,7 @@ export default {
         const pre = tx.meta?.preTokenBalances || [];
         const post = tx.meta?.postTokenBalances || [];
         const ownerOut = ownerDeltaUSDC(pre, post, wallet);
-        const destIn  = accountDeltaUSDC(pre, post, dest);
+        const destIn  = accountDeltaUSDC(pre, post, destAta);
 
         const okAmt = (ownerOut + 1e-9) >= EARLY_FLAT_USDC && (destIn + 1e-9) >= EARLY_FLAT_USDC;
         if (!okAmt) return J({ ok:false, error:"fee_underpaid", ownerOut, destIn, need: EARLY_FLAT_USDC }, 400);
@@ -530,8 +549,6 @@ async function passesMintGate(env, owner, gateMint) {
   } catch { return true; } // Fail-open
 }
 
-// Collection-Gate via Helius DAS (compressed & uncompressed)
-// Voraussetzung: getPublicRpcUrl() liefert Helius DAS RPC (z.B. https://rpc.helius.xyz/?api-key=...)
 async function passesCollectionGate(env, owner, collection) {
   try {
     const rpc = await getPublicRpcUrl(env);
@@ -723,6 +740,13 @@ function numFrom(amountStr, decimals){
   return Number(a) / Number(den);
 }
 
+/* ---------- Token-Account -> Owner ---------- */
+async function getTokenAccountOwner(rpcUrl, tokenAccount) {
+  const res = await rpcCall(rpcUrl, "getAccountInfo", [tokenAccount, { encoding:"jsonParsed", commitment:"confirmed" }]);
+  const owner = res?.value?.data?.parsed?.info?.owner;
+  return isAddress(owner) ? owner : null;
+}
+
 /* ---------- Solana Signatur-Verify ---------- */
 async function verifySolanaSig(pubkeyBase58, message, sigBase58){
   try{
@@ -763,10 +787,8 @@ function b58decode(s){
   }
   return new Uint8Array(bytes);
 }
-
 /* ---------- Solana Pay URL ---------- */
 function makeSolanaPayUrl({ to, amount, splToken, label, message }) {
-  // amount als string mit max. 6 Nachkommastellen (USDC)
   const amt = Number(amount || 0);
   const amountStr = (Math.round(amt * 1e6) / 1e6).toString();
   const qp = new URLSearchParams();
