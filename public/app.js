@@ -3,28 +3,28 @@
    Pfad: /public/token/app.js
    =========================================== */
 
-/* ==================== KONFIG (Fallbacks) ==================== */
+/* ==================== KONFIG ==================== */
 const CFG = {
   RPC: "https://inpinity.online/rpc",
   INPI_MINT: "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   API_BASE: "https://inpinity.online/api/token",
 
-  P0_USDC: 0.00031415,
-  PRESALE_DISCOUNT: 0.10,
+  P0_USDC: 0.00031415,           // Fallback-Preis
+  PRESALE_DISCOUNT: 0.10,        // Fallback-Rabatt
 
   DEPOSIT_USDC_ATA_FALLBACK: "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
   TGE_TS_FALLBACK: Math.floor(Date.now()/1000) + 60*60*24*90
 };
 
 /* ================ SOLANA / PHANTOM ================ */
-const { Connection, PublicKey } = solanaWeb3;
+const { Connection } = solanaWeb3;
 
 const $ = (sel) => document.querySelector(sel);
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const short = (a) => (a?.slice(0, 4) + "…" + a?.slice(-4));
 function fmt(n, d = 2) { if (n == null || isNaN(n)) return "–"; return Number(n).toLocaleString("de-DE",{maximumFractionDigits:d}); }
 function solscan(addr){ return `https://solscan.io/account/${addr}`; }
+function nowSec(){ return Math.floor(Date.now()/1000); }
 
 // UI-Refs
 const btnConnect = $("#btnConnect");
@@ -59,8 +59,6 @@ const STATE = {
   deposit_ata: null
 };
 
-function nowSec(){ return Math.floor(Date.now()/1000); }
-
 /* ---------- Preis/Erwartung ---------- */
 function currentPriceUSDC() {
   if (STATE.presale_state === "pre" && STATE.price_presale) return STATE.price_presale;
@@ -76,20 +74,16 @@ function calcExpectedInpi(usdc) {
 
 /* ==================== INIT ==================== */
 async function init() {
-  // 1) Status zuerst laden (liefert rpc_url/mints/deposit etc.)
   await refreshStatus();
 
-  // 2) RPC-Verbindung anhand Admin/API (falls nicht vorhanden → Fallback)
   if (!STATE.rpc_url) STATE.rpc_url = CFG.RPC;
   if (!connection || currentRpcUrl !== STATE.rpc_url) {
     connection = new Connection(STATE.rpc_url, "confirmed");
     currentRpcUrl = STATE.rpc_url;
   }
 
-  // 3) UI: Presale-Preis/State
   p0.textContent = `${Number(STATE.price_presale ?? (CFG.P0_USDC*(1-CFG.PRESALE_DISCOUNT))).toFixed(6)} USDC`;
 
-  // 4) Phantom?
   if (window.solana?.isPhantom) {
     provider = window.solana;
     try {
@@ -102,7 +96,6 @@ async function init() {
     btnConnect.onclick = () => window.open("https://phantom.app", "_blank");
   }
 
-  // 5) Countdown
   tickTGE();
   setInterval(tickTGE, 1000);
 }
@@ -239,7 +232,6 @@ btnPresaleIntent.addEventListener("click", async () => {
       a.textContent = `(Solscan)`;
       small.appendChild(a);
 
-      // Copy-Button
       const copyBtn = document.createElement("button");
       copyBtn.className = "secondary";
       copyBtn.textContent = "Kopieren";
@@ -261,39 +253,14 @@ btnPresaleIntent.addEventListener("click", async () => {
   }
 });
 
-/* ---------- SPL Balances ---------- */
-async function getSplBalance(mint, owner) {
-  const out = await fetch(STATE.rpc_url || CFG.RPC, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "getTokenAccountsByOwner",
-      params: [owner.toBase58(), { mint }, { encoding: "jsonParsed", commitment: "confirmed" }]
-    })
-  }).then(r => r.json()).catch(()=>null);
-
-  const arr = out?.result?.value || [];
-  let raw = 0n, decimals = 0;
-  for (const it of arr) {
-    const info = it?.account?.data?.parsed?.info;
-    if (!info) continue;
-    const uiAmt = info?.tokenAmount;
-    decimals = Number(uiAmt?.decimals || 0);
-    raw += BigInt(uiAmt?.amount || "0");
-  }
-  const den = BigInt(10) ** BigInt(decimals || 0);
-  return Number(raw) / Number(den || 1n);
-}
-
+/* ---------- Wallet-Balances über API ---------- */
 async function refreshBalances() {
   if (!pubkey) return;
   try {
-    const [u, i] = await Promise.all([
-      getSplBalance(STATE.usdc_mint || CFG.USDC_MINT, pubkey),
-      getSplBalance(STATE.inpi_mint || CFG.INPI_MINT, pubkey),
-    ]);
+    const url = `${CFG.API_BASE}/wallet/balances?wallet=${pubkey.toBase58()}`;
+    const j = await fetch(url).then(r => r.json());
+    const u = Number(j?.usdc?.amount ?? 0);
+    const i = Number(j?.inpi?.amount ?? 0);
     usdcBal.textContent = fmt(u, 2) + " USDC";
     inpiBal.textContent = fmt(i, 2) + " INPI";
   } catch (e) {

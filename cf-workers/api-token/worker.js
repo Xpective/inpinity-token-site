@@ -1,11 +1,6 @@
-// INPI Token API
-// KV-Bindings (wrangler.toml):
-//  - CONFIG       (Admin pflegt öffentlich lesbare Konfig-Werte)
-//  - PRESALE      (hier speichern wir Presale-Intents)
-//  - INPI_CLAIMS  (für spätere Claim-Daten – derzeit nur vorbereitet)
-//
-// Vars:
-//  - RPC_URL, GATE_MINT, PRESALE_MIN_USDC, PRESALE_MAX_USDC
+// INPI Token API (mit Deposit- & Wallet-Balance)
+// KV-Bindings: CONFIG, PRESALE, INPI_CLAIMS
+// Vars: RPC_URL, GATE_MINT, PRESALE_MIN_USDC, PRESALE_MAX_USDC
 
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"; // offizieller Solana-USDC
 
@@ -19,14 +14,13 @@ export default {
       if (req.method === "GET" && p === "/api/token/status") {
         const cfg = await readPublicConfig(env);
         const rpc_url = await getPublicRpcUrl(env);
-
         const out = {
           rpc_url,
           usdc_mint: USDC_MINT,
 
           inpi_mint: cfg.INPI_MINT || "",
           presale_state: cfg.presale_state || "pre",
-          tge_ts: cfg.tge_ts, // Sekunden (normalisiert)
+          tge_ts: cfg.tge_ts, // Sekunden
           presale_price_usdc: toNumOrNull(cfg.presale_price_usdc),
           public_price_usdc:  toNumOrNull(cfg.public_price_usdc),
           deposit_usdc_ata:   cfg.presale_deposit_usdc || "",
@@ -39,6 +33,53 @@ export default {
           updated_at: Date.now()
         };
         return J(out);
+      }
+
+      // ---- NEU: Deposit-Balance (public) ----
+      if (req.method === "GET" && p === "/api/token/deposit/balance") {
+        const cfg = await readPublicConfig(env);
+        const depo = cfg.presale_deposit_usdc || "";
+        if (!isAddress(depo)) return J({ ok:false, error:"deposit_not_ready" }, 503);
+
+        const rpc = await getPublicRpcUrl(env);
+        const r = await rpcCall(rpc, "getTokenAccountBalance", [depo, { commitment: "confirmed" }]);
+        const v = r?.value;
+        if (!v) return J({ ok:false, error:"rpc_no_value" }, 502);
+
+        return J({
+          ok: true,
+          address: depo,
+          mint: USDC_MINT,
+          amount: v.amount,                   // Basis-Einheiten (10^decimals)
+          ui_amount: v.uiAmount,              // Number
+          ui_amount_string: v.uiAmountString, // String
+          decimals: v.decimals,
+          updated_at: Date.now()
+        });
+      }
+
+      // ---- NEU: Wallet-Balances (public) ----
+      if (req.method === "GET" && p === "/api/token/wallet/balances") {
+        const wallet = url.searchParams.get("wallet")?.trim();
+        if (!isAddress(wallet)) return J({ ok:false, error:"bad_wallet" }, 400);
+
+        const cfg = await readPublicConfig(env);
+        const rpc = await getPublicRpcUrl(env);
+
+        const [usdc, inpi] = await Promise.all([
+          getSplBalance(rpc, wallet, USDC_MINT),
+          cfg.INPI_MINT ? getSplBalance(rpc, wallet, cfg.INPI_MINT) : Promise.resolve(null)
+        ]);
+
+        return J({
+          ok: true,
+          wallet,
+          usdc,                // { amount, decimals, accounts[] }
+          inpi,                // dito oder null
+          usdc_mint: USDC_MINT,
+          inpi_mint: cfg.INPI_MINT || null,
+          updated_at: Date.now()
+        });
       }
 
       // ---- PRESALE INTENT (public; validiert) ----
@@ -93,10 +134,22 @@ export default {
           ts: Date.now()
         }), { expirationTtl: 60*60*24*30 });
 
+        // Optionaler Solana-Pay Link (ohne reference)
+        const sp = makeSolanaPayUrl({
+          to: depo,
+          amount,
+          splToken: USDC_MINT,
+          label: "Inpinity Presale",
+          message: "INPI Presale Contribution"
+        });
+
         const text =
 `✅ Intent registriert.
 Bitte sende ${amount} USDC an:
 ${depo}
+
+Oder 1-Klick mit Solana-Pay:
+${sp}
 
 Sobald die Zahlung erkannt ist, wird deine Zuteilung im System vermerkt. Claim ab TGE möglich.`;
         return new Response(text, { status: 200, headers: secTextHeaders() });
@@ -112,7 +165,6 @@ Sobald die Zahlung erkannt ist, wird deine Zuteilung im System vermerkt. Claim a
 
 /* ---------------- Helpers ---------------- */
 async function readPublicConfig(env) {
-  // Nur Keys lesen, die der Admin-Worker pflegt
   const keys = [
     "INPI_MINT",
     "presale_state",
@@ -145,9 +197,44 @@ async function readPublicConfig(env) {
 async function getPublicRpcUrl(env) {
   try {
     const fromCfg = await env.CONFIG.get("public_rpc_url");
-    return fromCfg || env.RPC_URL || "https://inpinity.online/rpc";
+    return fromCfg || env.RPC_URL || "https://api.mainnet-beta.solana.com";
   } catch {
-    return env.RPC_URL || "https://inpinity.online/rpc";
+    return env.RPC_URL || "https://api.mainnet-beta.solana.com";
+  }
+}
+
+async function rpcCall(rpcUrl, method, params) {
+  const body = { jsonrpc: "2.0", id: 1, method, params };
+  const r = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type":"application/json" },
+    body: JSON.stringify(body)
+  });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error?.message || "rpc_error");
+  return j.result;
+}
+
+// Summe der SPL-Balances (uiAmount) für owner+mint
+async function getSplBalance(rpc, owner, mint){
+  try {
+    const res = await rpcCall(rpc, "getTokenAccountsByOwner", [
+      owner,
+      { mint },
+      { encoding:"jsonParsed", commitment:"processed" }
+    ]);
+    const arr = res?.value || [];
+    let total = 0, decimals = null, accounts = [];
+    for (const it of arr){
+      const info = it?.account?.data?.parsed?.info;
+      const amt = info?.tokenAmount?.uiAmount || 0;
+      decimals = info?.tokenAmount?.decimals ?? decimals;
+      total += amt;
+      if (it?.pubkey) accounts.push(it.pubkey);
+    }
+    return { amount: total, decimals, accounts };
+  } catch (e){
+    return { amount: 0, decimals: null, accounts: [], error: String(e?.message || e) };
   }
 }
 
@@ -155,16 +242,12 @@ async function getPublicRpcUrl(env) {
 async function passesNftGate(env, owner, gateMint) {
   try {
     const rpc = await getPublicRpcUrl(env);
-    if (!rpc) return true; // kein RPC → Gate nicht blocken
-    const body = {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "getTokenAccountsByOwner",
-      params: [owner, { mint: gateMint }, { encoding: "jsonParsed", commitment: "confirmed" }]
-    };
-    const r = await fetch(rpc, { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify(body) });
-    const j = await r.json();
-    const arr = j?.result?.value || [];
+    const res = await rpcCall(rpc, "getTokenAccountsByOwner", [
+      owner,
+      { mint: gateMint },
+      { encoding: "jsonParsed", commitment: "confirmed" }
+    ]);
+    const arr = res?.value || [];
     for (const it of arr) {
       const info = it?.account?.data?.parsed?.info;
       const amt = info?.tokenAmount?.uiAmount || 0;
@@ -175,6 +258,16 @@ async function passesNftGate(env, owner, gateMint) {
     // Fallback: wenn RPC hakt, nicht blocken
     return true;
   }
+}
+
+function makeSolanaPayUrl({ to, amount, splToken, label, message }) {
+  // https://github.com/solana-labs/solana-pay (vereinfachtes Schema)
+  const u = new URL(`solana:${to}`);
+  u.searchParams.set("amount", String(amount));
+  if (splToken) u.searchParams.set("spl-token", splToken);
+  if (label)    u.searchParams.set("label", label);
+  if (message)  u.searchParams.set("message", message);
+  return u.toString();
 }
 
 function isAddress(s){ return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(s || "")); }
