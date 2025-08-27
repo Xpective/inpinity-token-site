@@ -1,11 +1,6 @@
 /* ===========================================
    Inpinity Token – Frontend (Phantom-first)
-   Pfad: /token/app.js
-   ===========================================
-   Neu dazu:
-   - Lädt /public/app-cfg (falls vorhanden) und überschreibt Fallbacks:
-     RPC, INPI_MINT, USDC_MINT, API_BASE, CREATOR_USDC_ATA,
-     PRICE_WITH/WITHOUT_NFT_FALLBACK (aus PRICE_USDC_PER_INPI + DISCOUNT_BPS)
+   Pfad: /public/token/app.js
    =========================================== */
 
 /* ==================== KONFIG ==================== */
@@ -35,8 +30,8 @@ const CFG = {
     dist_buyback_reserve_bps: 800
   },
 
-  // CDN-Fallback für web3.js (IIFE Build)
-  WEB3_IIFE: "https://unpkg.com/@solana/web3.js@1.95.8/lib/index.iife.min.js"
+  // CDN-Fallback (CSP-freundlich: jsDelivr)
+  WEB3_IIFE: "https://cdn.jsdelivr.net/npm/@solana/web3.js@1.98.4/lib/index.iife.min.js"
 };
 
 /* ================ SOLANA / PHANTOM ================ */
@@ -86,16 +81,12 @@ async function loadPublicAppCfg(){
     if (!r.ok) return;
     const c = await r.json();
 
-    // RPC / API
     if (c?.RPC) CFG.RPC = c.RPC;
     if (c?.API_BASE) CFG.API_BASE = c.API_BASE;
-
-    // Mints / Deposit
     if (c?.INPI_MINT) CFG.INPI_MINT = c.INPI_MINT;
     if (c?.USDC_MINT) CFG.USDC_MINT = c.USDC_MINT;
     if (c?.CREATOR_USDC_ATA) CFG.DEPOSIT_USDC_ATA_FALLBACK = c.CREATOR_USDC_ATA;
 
-    // Preis-Fallbacks aus PRICE_USDC_PER_INPI + DISCOUNT_BPS
     const base = Number(c?.PRICE_USDC_PER_INPI);
     const disc = Number(c?.DISCOUNT_BPS ?? 0);
     if (Number.isFinite(base) && base>0){
@@ -103,7 +94,7 @@ async function loadPublicAppCfg(){
       const withNft = base * (1 - (Number.isFinite(disc)? disc : 0)/10000);
       CFG.PRICE_WITH_NFT_FALLBACK = Math.round(withNft*1e6)/1e6;
     }
-  }catch(e){ /* still fine – Fallbacks bleiben */ }
+  }catch{}
 }
 
 /* ---------- Tokenomics UI ---------- */
@@ -182,7 +173,7 @@ const btnCopyDeposit = $("#btnCopyDeposit");
 // Presale QR
 const payArea = $("#payArea");
 const qrContrib = $("#inpi-qr");
-// Optionale Deep-Link Buttons (falls im HTML vorhanden)
+// Deep-Links
 const aPhantom = $("#link-phantom");
 const aSolflare = $("#link-solflare");
 
@@ -261,7 +252,7 @@ async function init(){
     return;
   }
 
-  // 2) API-Status laden (setzt Preise, RPC, etc.)
+  // 2) API-Status laden
   await refreshStatus();
 
   // 3) Verbindung vorbereiten
@@ -277,7 +268,7 @@ async function init(){
   if (inpAmount && STATE.presale_max_usdc != null) inpAmount.max = String(STATE.presale_max_usdc);
   if (inpAmount && !inpAmount.step) inpAmount.step = "0.000001";
 
-  // 4) Phantom Provider erkennen + Connect-Button konfigurieren
+  // 4) Phantom Provider erkennen + Connect-Button
   provider = getPhantomProvider();
   if (provider?.isPhantom){
     try{
@@ -527,74 +518,4 @@ if (btnPresaleIntent){
       if (payArea) payArea.style.display="block";
       if (qrContrib && qrUrl){ qrContrib.src = qrUrl; qrContrib.style.display="block"; }
       if (aPhantom && contrib.phantom_universal_url){ aPhantom.href = contrib.phantom_universal_url; aPhantom.style.display="inline-block"; }
-      if (aSolflare && contrib.solflare_universal_url){ aSolflare.href = contrib.solflare_universal_url; aSolflare.style.display="inline-block"; }
-
-      if (intentMsg){
-        intentMsg.textContent="";
-        const p1=document.createElement("p"); p1.textContent=`✅ Intent registriert. Bitte ${usdc} USDC via QR/Link senden (SPL-USDC).`;
-        const p2=document.createElement("p"); p2.textContent=`Optional: Nutze unten den Early-Claim (1 USDC Fee) für sofortige Gutschrift.`;
-        intentMsg.appendChild(p1); intentMsg.appendChild(p2); setBonusNote();
-      }
-
-      await refreshStatus();
-    }catch(e){
-      console.error(e); alert(`Intent fehlgeschlagen:\n${e?.message||e}`);
-    }finally{ inFlight=false; }
-  });
-}
-
-/* ---------- Early Claim ---------- */
-async function startEarlyFlow(){
-  if (!pubkey) return alert("Bitte zuerst Wallet verbinden.");
-  if (!STATE.early.enabled) return alert("Early-Claim ist derzeit deaktiviert.");
-  try{
-    earlyArea?.classList?.remove("hidden");
-    if (earlyMsg) earlyMsg.textContent="Erzeuge Solana-Pay Link …";
-    const r = await fetch(`${CFG.API_BASE}/claim/early-intent`, {
-      method:"POST", headers:{ "content-type":"application/json", accept:"application/json" },
-      body: JSON.stringify({ wallet: pubkey.toBase58() })
-    });
-    const j = await r.json().catch(()=>null);
-    if (!r.ok || !j?.ok) throw new Error(j?.error || "Early-Intent fehlgeschlagen");
-
-    const qrUrl = j.qr_url || null;
-    lastDeepLinks.claimNow = {
-      solana_pay_url: j.solana_pay_url || null,
-      phantom_universal_url: j.solana_pay_url ? `https://phantom.app/ul/v1/solana-pay?link=${encodeURIComponent(j.solana_pay_url)}` : null,
-      solflare_universal_url: j.solana_pay_url ? `https://solflare.com/ul/v1/solana-pay?link=${encodeURIComponent(j.solana_pay_url)}` : null
-    };
-
-    if (qrClaimNow && qrUrl) { qrClaimNow.src = qrUrl; qrClaimNow.style.display="block"; }
-    if (earlyMsg) earlyMsg.textContent = `Sende ${STATE.early.flat_usdc} USDC (QR oder Link). Danach unten die Transaktions-Signatur eintragen und bestätigen.`;
-  }catch(e){ console.error(e); alert(e?.message||e); }
-}
-async function confirmEarlyFee(){
-  if (!pubkey) return alert("Wallet verbinden.");
-  const sig=(earlySig?.value||"").trim();
-  if (!sig) return alert("Bitte die Transaktions-Signatur der Fee-Zahlung eintragen.");
-  try{
-    if (earlyMsg) earlyMsg.textContent="Prüfe Zahlung & queued Claim …";
-    const r = await fetch(`${CFG.API_BASE}/claim/confirm`, {
-      method:"POST", headers:{ "content-type":"application/json", accept:"application/json" },
-      body: JSON.stringify({ wallet: pubkey.toBase58(), fee_signature: sig })
-    });
-    const j = await r.json().catch(()=>null);
-    if (!r.ok || !j?.ok) throw new Error(j?.error || "Confirm fehlgeschlagen");
-    if (earlyMsg) earlyMsg.textContent = `✅ Claim eingereiht (Job: ${j.job_id || "n/a"}).`;
-    await refreshClaimStatus();
-  }catch(e){ console.error(e); alert(e?.message||e); if (earlyMsg) earlyMsg.textContent="Fehler bei der Bestätigung."; }
-}
-
-/* ---------- Base58 (encode) ---------- */
-const B58_ALPH = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-function bs58Encode(bytes){
-  if (!(bytes&&bytes.length)) return "";
-  let zeros=0; while(zeros<bytes.length && bytes[zeros]===0) zeros++;
-  let n=0n; for (const b of bytes) n = (n<<8n) + BigInt(b);
-  let out=""; while(n>0n){ const rem=Number(n%58n); out = B58_ALPH[rem]+out; n = n/58n; }
-  for (let i=0;i<zeros;i++) out="1"+out;
-  return out || "1".repeat(zeros);
-}
-
-/* ---------- Boot ---------- */
-window.addEventListener("DOMContentLoaded", ()=>{ init().catch(console.error); });
+      if (aSolflare && contrib.solflare_universal_url){ aSolflare.href = contrib.solflare_universal_url; aSolflare.style.display="inline-block
