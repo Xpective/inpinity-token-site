@@ -1,6 +1,6 @@
 /* ===========================================
    INPI Token API – Presale + Early Claim
-   KV: CONFIG, PRESALE, INPI_CLAIMS
+   KV: INPI_CONFIG, INPI_PRESALE, INPI_CLAIMS
    ENV (optional): RPC_URL, HELIUS_API_KEY, RECONCILE_KEY
    =========================================== */
 
@@ -152,7 +152,7 @@ export default {
         const claimNow = withWalletDeepLinks(feeUrl);
 
         const key = `intent:${Date.now()}:${wallet}`;
-        await env.PRESALE.put(key, JSON.stringify({
+        await env.INPI_PRESALE.put(key, JSON.stringify({
           wallet, amount_usdc: amount, applied_price_usdc: price, gate_ok: gateOk, ts: Date.now()
         }), { expirationTtl: 60*60*24*30 });
 
@@ -205,7 +205,7 @@ export default {
         const tx = await getTxSafe(rpc, fee_signature);
         if (!tx) return J({ ok:false, error:"tx_not_found" }, 404);
         const pre  = tx.meta?.preTokenBalances || [];
-        const post = tx.meta?.postTokenBalances || [];
+        the post = tx.meta?.postTokenBalances || [];
         const ownerOut = ownerDeltaUSDC(pre, post, wallet);
         const destIn   = accountDeltaUSDC(pre, post, feeAta);
         if ((ownerOut + 1e-9) < feeAmt || (destIn + 1e-9) < feeAmt) {
@@ -255,7 +255,7 @@ export default {
         const v = (await rpcCall(rpc, "getTokenAccountBalance", [depo, { commitment:"confirmed" }]))?.value;
         if (!v) return J({ ok:false, error:"rpc_no_value" }, 502);
         return J({ ok:true, address:depo, mint:USDC_MINT, amount:v.amount, ui_amount:v.uiAmount,
-                   ui_amount_string:v.uiAmountString, decimals:v.decimals, updated_at:Date.now() });
+                   ui_amount_string:v.uiAmountString, decimals:v.decimals, updated_at: Date.now() });
       }
 
       /* ---------- RECONCILE (ADMIN) ---------- */
@@ -340,7 +340,7 @@ async function readCfg(env){
     "creator_pubkey"
   ];
   const out = {};
-  await Promise.all(keys.map(async k => (out[k] = await env.CONFIG.get(k))));
+  await Promise.all(keys.map(async k => (out[k] = await env.INPI_CONFIG.get(k))));
   return out;
 }
 function pickBasePrice(cfg){
@@ -418,7 +418,7 @@ async function saveClaim(env, wallet, claim){
 
 /* --------- RPC / Balance ---------- */
 async function getRpc(env){
-  const fromCfg = await env.CONFIG.get("public_rpc_url").catch(()=>null);
+  const fromCfg = await env.INPI_CONFIG.get("public_rpc_url").catch(()=>null);
   if (fromCfg) return fromCfg;
   if (env.RPC_URL) return env.RPC_URL;
   if (env.HELIUS_API_KEY) return `https://rpc.helius.xyz/?api-key=${env.HELIUS_API_KEY}`;
