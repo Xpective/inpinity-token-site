@@ -1,22 +1,48 @@
+# cf-workers/api-token/wrangler.toml
+# ============================================
+# INPI Token API – Presale + Early Claim
+# Läuft hinter: https://inpinity.online/api/token/*
+# KV: CONFIG, PRESALE, INPI_CLAIMS
+# ENV: siehe [vars] + Secrets unten
+# ============================================
+
 name = "api-token"
 main = "worker.js"
 compatibility_date = "2024-12-01"
 
+# Route nur für die API (nicht das Admin-UI)
 routes = [
   { pattern = "inpinity.online/api/token/*", zone_name = "inpinity.online" }
 ]
 
+# KV-Bindings (IDs müssen exakt zu deinem Account passen)
 kv_namespaces = [
+  # Globale Projekt-Konfiguration (wird vom Admin-Worker beschrieben)
   { binding = "CONFIG",      id = "a82cb91c589b4b1a8c786807a49fe5f5"  },
+  # Temporäre/Log-Daten zu Presale-Intents
   { binding = "PRESALE",     id = "c7fe71ba6bd54e2a9ce76ed9c726a75d" },
+  # Aggregierte Claims & Early-Claim-Jobs
   { binding = "INPI_CLAIMS", id = "485fc6ed252b445ba8ca18aaa9038e5c" }
 ]
 
 [vars]
-# Hard-Caps für den Intent-Input
+# ---------- API-Caps für Eingaben ----------
+# Diese Caps greifen NUR wenn nicht in CONFIG gesetzt.
+# (Dein Code nutzt: CONFIG.presale_min/max_usdc -> sonst ENV)
 PRESALE_MIN_USDC = "0"
 PRESALE_MAX_USDC = "25000"
 
-# RPC: Reihenfolge in deinem Code ist: CONFIG.public_rpc_url > RPC_URL > Helius
+# ---------- RPC-Reihenfolge ----------
+# getRpc(): CONFIG.public_rpc_url > RPC_URL > (fallback Helius) > Mainnet
 RPC_URL = "https://api.mainnet-beta.solana.com"
+# Falls du Helius verwenden willst, bleibt das aktiv; sonst einfach leeren String setzen.
 HELIUS_API_KEY = "d95932bb-5385-4d84-ad18-7fc66e014d58"
+
+# ---------- Sonstiges ----------
+# Kein CORS-Stress: Der Worker sendet bereits permissive CORS-Header.
+# Nichts weiter hier nötig.
+
+# ---------- Secrets (NICHT im Klartext hier!) ----------
+# RECONCILE_KEY  (für /api/token/presale/reconcile-one)
+# Setzen mit:
+#   npx wrangler secret put RECONCILE_KEY
