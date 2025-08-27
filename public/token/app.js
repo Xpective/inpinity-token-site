@@ -2,19 +2,15 @@
    Inpinity Token – Frontend (Phantom-first)
    Pfad: /token/app.js
    ===========================================
-   ✅ Was hier gefixt/ergänzt ist, damit's jetzt wirklich läuft:
-   - Robuste Phantom-Provider-Erkennung (window.phantom.solana ODER window.solana)
-   - Fallback: Lädt @solana/web3.js automatisch nach, falls solanaWeb3 noch nicht vorhanden ist
-   - Sichere Nutzung aller DOM-Referenzen (keine harten Crashes, wenn Elemente fehlen)
-   - Bessere Status-/Fehlerbehandlung & klare User-Feedbacks
-   - Deep-Links neben QR (Phantom/Solflare) werden gesetzt
-   - Preis-/Gate-Logik 1:1 mit der API synchron
-   - Tokenomics-Box wird auch ohne API-Dist-Felder sinnvoll gefüllt
+   Neu dazu:
+   - Lädt /public/app-cfg (falls vorhanden) und überschreibt Fallbacks:
+     RPC, INPI_MINT, USDC_MINT, API_BASE, CREATOR_USDC_ATA,
+     PRICE_WITH/WITHOUT_NFT_FALLBACK (aus PRICE_USDC_PER_INPI + DISCOUNT_BPS)
    =========================================== */
 
 /* ==================== KONFIG ==================== */
 const CFG = {
-  // RPC: kommt i.d.R. dynamisch aus /api/token/status; das hier ist nur Fallback
+  // Wird ggf. dynamisch via /public/app-cfg überschrieben
   RPC: "https://api.mainnet-beta.solana.com",
 
   INPI_MINT: "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
@@ -24,7 +20,7 @@ const CFG = {
   // Fallbacks, falls API mal nicht antwortet
   PRICE_WITHOUT_NFT_FALLBACK: 0.00031415,
   PRICE_WITH_NFT_FALLBACK:    0.000282735, // 10% Rabatt
-  DEPOSIT_USDC_ATA_FALLBACK: "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
+  DEPOSIT_USDC_ATA_FALLBACK:  "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
   TGE_TS_FALLBACK: Math.floor(Date.now()/1000) + 60*60*24*90,
 
   SUPPLY_FALLBACK: 3141592653,
@@ -56,7 +52,6 @@ function nowSec(){ return Math.floor(Date.now()/1000); }
 
 /* ---------- Web3 + Provider laden ---------- */
 function getPhantomProvider(){
-  // Bevorzugt window.phantom.solana (neuer Weg), fallback auf window.solana
   if (typeof window !== "undefined"){
     if (window.phantom?.solana?.isPhantom) return window.phantom.solana;
     if (window.solana?.isPhantom) return window.solana;
@@ -69,7 +64,6 @@ function ensureWeb3(){
       Connection = window.solanaWeb3.Connection;
       return resolve(true);
     }
-    // dynamisch nachladen
     const s = document.createElement("script");
     s.src = CFG.WEB3_IIFE; s.async = true; s.onload = ()=>{
       if (window.solanaWeb3?.Connection){
@@ -83,6 +77,33 @@ function ensureWeb3(){
     s.onerror = ()=>{ console.error("web3.js CDN-Load Fehler"); resolve(false); };
     document.head.appendChild(s);
   });
+}
+
+/* ---------- /public/app-cfg laden (optional) ---------- */
+async function loadPublicAppCfg(){
+  try{
+    const r = await fetch("/public/app-cfg", { headers:{accept:"application/json"} });
+    if (!r.ok) return;
+    const c = await r.json();
+
+    // RPC / API
+    if (c?.RPC) CFG.RPC = c.RPC;
+    if (c?.API_BASE) CFG.API_BASE = c.API_BASE;
+
+    // Mints / Deposit
+    if (c?.INPI_MINT) CFG.INPI_MINT = c.INPI_MINT;
+    if (c?.USDC_MINT) CFG.USDC_MINT = c.USDC_MINT;
+    if (c?.CREATOR_USDC_ATA) CFG.DEPOSIT_USDC_ATA_FALLBACK = c.CREATOR_USDC_ATA;
+
+    // Preis-Fallbacks aus PRICE_USDC_PER_INPI + DISCOUNT_BPS
+    const base = Number(c?.PRICE_USDC_PER_INPI);
+    const disc = Number(c?.DISCOUNT_BPS ?? 0);
+    if (Number.isFinite(base) && base>0){
+      CFG.PRICE_WITHOUT_NFT_FALLBACK = base;
+      const withNft = base * (1 - (Number.isFinite(disc)? disc : 0)/10000);
+      CFG.PRICE_WITH_NFT_FALLBACK = Math.round(withNft*1e6)/1e6;
+    }
+  }catch(e){ /* still fine – Fallbacks bleiben */ }
 }
 
 /* ---------- Tokenomics UI ---------- */
@@ -223,13 +244,16 @@ function updateIntentAvailability(){
   if (btnPresaleIntent){ btnPresaleIntent.disabled = !!reason; btnPresaleIntent.title = reason || ""; }
   if (intentMsg){
     const id="intent-reason"; let n=document.getElementById(id);
-    if (reason){ if(!n){ n=document.createElement("p"); n.id=id; n.className="muted"; intentMsg.appendChild(n); } n.textContent="Hinweis: "+reason; }
+    if (reason){ if(!n){ n=document.createElement('p'); n.id=id; n.className='muted'; intentMsg.appendChild(n); } n.textContent="Hinweis: "+reason; }
     else if (n) n.remove();
   }
 }
 
 /* ==================== INIT ==================== */
 async function init(){
+  // 0) Falls vorhanden, app-cfg einlesen (setzt Defaults dynamisch)
+  await loadPublicAppCfg();
+
   // 1) web3.js sicherstellen
   const okWeb3 = await ensureWeb3();
   if (!okWeb3) {
@@ -257,7 +281,6 @@ async function init(){
   provider = getPhantomProvider();
   if (provider?.isPhantom){
     try{
-      // optional auto-connect (nur wenn bereits trusted)
       await provider.connect({ onlyIfTrusted:true }).then(({publicKey})=>onConnected(publicKey)).catch(()=>{});
     }catch{}
     if (btnConnect){
@@ -470,7 +493,7 @@ if (btnPresaleIntent){
   btnPresaleIntent.addEventListener("click", async ()=>{
     if(inFlight) return;
     if(!pubkey) return alert("Bitte zuerst mit Phantom verbinden.");
-    if(STATE.presale_state==="closed") return alert("Presale ist geschlossen.");
+    if (STATE.presale_state==="closed") return alert("Presale ist geschlossen.");
 
     const usdc = Number(inpAmount?.value || "0");
     if (!usdc||usdc<=0) return alert("Bitte gültigen USDC-Betrag eingeben.");
@@ -479,7 +502,7 @@ if (btnPresaleIntent){
 
     inFlight=true; if (intentMsg) intentMsg.textContent="Prüfe Caps & registriere Intent …";
     try{
-      // optional signMessage (macht den Intent eindeutiger)
+      // optional signMessage
       let sig_b58=null, msg_str=null;
       if (provider?.signMessage){
         msg_str = `INPI Presale Intent\nwallet=${pubkey.toBase58()}\namount_usdc=${usdc}\nts=${Date.now()}`;
