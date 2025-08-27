@@ -13,7 +13,6 @@ kv_namespaces = [
 ]
 
 [vars]
-# Gate NICHT hier setzen, wenn du es im Admin pflegst:
-# GATE_COLLECTION = ""
-# GATE_MINT       = ""
-
+PRESALE_MIN_USDC = "0"
+PRESALE_MAX_USDC = "25000"
+RPC_URL = "https://api.mainnet-beta.solana.com"
