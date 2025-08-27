@@ -44,6 +44,7 @@ function nowSec(){ return Math.floor(Date.now()/1000); }
 /* ---------- Dynamische Hilfen ---------- */
 function el(id){ return document.getElementById(id); }
 function ensureTokenomicsSection(){
+  // Nur EINMAL erstellen (keine Gallery/zweite Box)
   if (el("tokenomicsBox")) return;
   const main = document.querySelector("main");
   if (!main) return;
@@ -186,8 +187,13 @@ const STATE = {
 };
 
 /* ---------- Preis/Erwartung ---------- */
+// Aktiv: bevorzugt "ohne NFT" (öffentlich). Falls das fehlt, fallback "mit NFT".
 function currentPriceUSDC() {
-  return STATE.gate_ok ? STATE.price_with_nft_usdc : STATE.price_without_nft_usdc;
+  const w  = STATE.price_with_nft_usdc;
+  const wo = STATE.price_without_nft_usdc;
+  if (wo && wo > 0) return wo;
+  if (w && w > 0) return w;
+  return null;
 }
 function calcExpectedInpi(usdc) {
   if (!usdc || usdc <= 0) return "–";
@@ -216,9 +222,8 @@ function updateIntentAvailability() {
   let reason = null;
   if (STATE.presale_state === "closed") {
     reason = "Der Presale ist geschlossen.";
-  } else if (!STATE.gate_ok && (STATE.price_without_nft_usdc == null || STATE.price_without_nft_usdc <= 0)) {
-    reason = "Nur mit NFT zugelassen (Gate aktiv).";
   }
+  // KEIN Gate-Blocker mehr im Frontend
 
   if (btnPresaleIntent) {
     btnPresaleIntent.disabled = !!reason;
@@ -339,14 +344,13 @@ async function refreshStatus(){
     STATE.presale_min_usdc = (typeof j?.presale_min_usdc === "number") ? j.presale_min_usdc : null;
     STATE.presale_max_usdc = (typeof j?.presale_max_usdc === "number") ? j.presale_max_usdc : null;
 
-    // Preise aus Status – WICHTIG:
+    // Preise aus Status
     const hasW  = ("price_with_nft_usdc" in (j||{}));
     const hasWo = ("price_without_nft_usdc" in (j||{}));
-
     STATE.price_with_nft_usdc    = hasW  ? (Number(j.price_with_nft_usdc)  || null) : (Number(j?.presale_price_usdc) || null);
     STATE.price_without_nft_usdc = hasWo ? (Number(j.price_without_nft_usdc) || null) : (Number(j?.public_price_usdc) || null);
 
-    // Falls API komplett leer/kaputt (beide null/undefined) => echte Fallbacks
+    // Falls API komplett leer/kaputt -> Fallbacks
     if (STATE.price_with_nft_usdc == null && STATE.price_without_nft_usdc == null) {
       STATE.price_with_nft_usdc    = CFG.PRICE_WITH_NFT_FALLBACK;
       STATE.price_without_nft_usdc = CFG.PRICE_WITHOUT_NFT_FALLBACK;
@@ -427,7 +431,7 @@ async function refreshBalances(){
     const inpi = Number(j?.inpi?.uiAmount ?? NaN);
     if (usdcBal) usdcBal.textContent = fmt(usdc, 2);
     if (inpiBal) inpiBal.textContent = fmt(inpi, 0);
-    STATE.gate_ok = !!j?.gate_ok;
+    STATE.gate_ok = !!j?.gate_ok; // nur Anzeige
     updatePriceRow();
     updateIntentAvailability();
   }catch(e){
@@ -517,11 +521,8 @@ if (btnPresaleIntent) {
     if (inFlight) return;
     if (!pubkey) return alert("Bitte zuerst mit Phantom verbinden.");
 
-    // Phase / Gate prüfen
+    // Phase prüfen (kein Gate-Blocker im Frontend)
     if (STATE.presale_state === "closed") return alert("Presale ist geschlossen.");
-    if (!STATE.gate_ok && (STATE.price_without_nft_usdc == null || STATE.price_without_nft_usdc <= 0)) {
-      return alert("Nur mit NFT zugelassen (Gate aktiv).");
-    }
 
     const usdc = Number(inpAmount?.value || "0");
     if (!usdc || usdc <= 0) return alert("Bitte gültigen USDC-Betrag eingeben.");
@@ -638,31 +639,25 @@ async function confirmEarlyFee(){
   }
 }
 
-/* ---------- Base58 (nur Encode) ---------- */
+/* ---------- Base58 (Encode) ---------- */
 const B58_ALPH = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 function bs58Encode(bytes){
-  // bytes: Uint8Array
-  if (!bytes || !bytes.length) return "";
-  // Count leading zeros
+  if (!(bytes && bytes.length)) return "";
+  // führende Nullen zählen
   let zeros = 0; while (zeros < bytes.length && bytes[zeros] === 0) zeros++;
-  // Convert to base58
-  let digits = [0];
-  for (let i = 0; i < bytes.length; i++){
-    let carry = bytes[i];
-    for (let j = 0; j < digits.length; j++){
-      const x = (digits[j] << 8) + carry;
-      digits[j] = Math.floor(x / 58);
-      carry = x % 58;
-    }
-    while (carry) { digits.push(carry % 58); carry = Math.floor(carry / 58); }
-    // Remove leading zeros in base58 representation
-    let k = 0; while (k < digits.length && digits[k] === 0) k++;
-    digits = digits.slice(k).concat(new Array(k).fill(0));
-  }
+  // BigInt bauen
+  let n = 0n;
+  for (const b of bytes) n = (n << 8n) + BigInt(b);
+  // in Base58 wandeln
   let out = "";
-  for (let i = 0; i < zeros; i++) out += "1";
-  for (let i = digits.length - 1; i >= 0; i--) out += B58_ALPH[digits[i] || 0];
-  return out;
+  while (n > 0n){
+    const rem = Number(n % 58n);
+    out = B58_ALPH[rem] + out;
+    n = n / 58n;
+  }
+  // führende '1' für Nullen
+  for (let i=0;i<zeros;i++) out = "1" + out;
+  return out || "1".repeat(zeros);
 }
 
 /* ---------- Boot ---------- */
