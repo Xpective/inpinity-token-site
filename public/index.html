@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Inpinity (INPI) – Presale & Status</title>
+  <meta name="description" content="Inpinity Token (INPI) – Presale, Status, Whitepaper, Verifizierungen." />
+
+  <!-- Strenge, aber passende CSP: erlaubt jsDelivr, Cloudflare Insights, deine API, Solana RPC & QR-Service -->
+  <meta http-equiv="Content-Security-Policy"
+        content="
+          default-src 'self';
+          connect-src 'self' https://inpinity.online https://api.mainnet-beta.solana.com https://rpc.helius.xyz;
+          img-src 'self' data: https://api.qrserver.com;
+          script-src 'self' https://cdn.jsdelivr.net https://static.cloudflareinsights.com;
+          style-src 'self' 'unsafe-inline';
+          object-src 'none';
+          base-uri 'none';
+          frame-ancestors 'none';
+        ">
+  <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin">
+
+  <link rel="preconnect" href="https://inpinity.online" />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+  <link rel="preconnect" href="https://api.qrserver.com" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="bar">
+    <img src="./inpi.png" class="logo" alt="INPI Logo"/>
+    <h1>Inpinity (INPI)</h1>
+    <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center">
+      <code id="walletAddr">—</code>
+      <button id="btnConnect" disabled>Verbinden</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Status -->
+    <section>
+      <h2>Status</h2>
+      <div class="stats">
+        <div><b>Presale-Phase:</b> <span id="presaleState">—</span></div>
+        <div><b>TGE in:</b> <span id="tgeTime">tbd</span></div>
+        <div>
+          <b>Preis (Presale, live/fallback):</b>
+          <span id="p0">—</span>
+          <span id="gateHint" class="muted" style="margin-left:.4rem"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Wallet -->
+    <section>
+      <h2>Deine Wallet</h2>
+      <div class="stats">
+        <div><b>USDC:</b> <span id="usdcBal">—</span></div>
+        <div><b>INPI:</b> <span id="inpiBal">—</span></div>
+      </div>
+    </section>
+
+    <!-- Deposit-Box (USDC) -->
+    <section class="card" id="depositBox">
+      <h2>Presale Einzahlung (USDC auf Solana)</h2>
+      <p class="row" style="gap:.5rem;align-items:center">
+        <b>ATA (Info/Bilanz):</b>
+        <code id="depositAddr">—</code>
+        <button id="btnCopyDeposit" class="secondary">Kopieren</button>
+        <a id="depositSolscan" href="#" target="_blank" rel="noopener" style="display:none">(Solscan)</a>
+      </p>
+      <p class="muted" style="margin:.25rem 0">
+        <b>Owner (Ziel-Pubkey):</b> <span id="depositOwner">—</span>
+      </p>
+      <p class="muted">
+        Sende nur <b>USDC (SPL)</b>. Die Presale-QR aus dem nächsten Schritt nutzt den <b>Owner-Pubkey</b>
+        und leitet automatisch an die USDC-ATA weiter.
+      </p>
+    </section>
+
+    <!-- Presale Intent -->
+    <section>
+      <h2>Presale Intent</h2>
+      <label>USDC Betrag
+        <input id="inpAmount" type="number" min="1" step="0.01" value="10" />
+      </label>
+      <div><small>Erwartete Zuteilung: <b id="expectedInpi">—</b></small></div>
+      <div style="margin-top:.6rem;display:flex;gap:.6rem;flex-wrap:wrap">
+        <button id="btnPresaleIntent">Intent senden</button>
+        <button id="btnHowTo" class="secondary">Kurzanleitung</button>
+      </div>
+
+      <div id="payArea" class="card" style="margin-top:.8rem;display:none">
+        <h3>Jetzt bezahlen (Presale)</h3>
+        <div class="row" style="gap:1rem;align-items:center;flex-wrap:wrap">
+          <img id="inpi-qr" alt="Scan & pay via Solana Pay" width="240" height="240" style="border:1px solid #eee;border-radius:8px;display:none"/>
+          <div class="col">
+            <p style="margin:0 0 .5rem 0">
+              <b>So zahlst du:</b> Scanne den QR-Code mit deiner Wallet <u>oder</u> kopiere die USDC-Adresse oben
+              und sende den Betrag manuell (SPL-USDC, 6 Dezimalstellen).
+            </p>
+            <p class="muted" style="margin:.4rem 0 0 0">
+              Bitte vom <b>selben Wallet</b> senden, das den Intent registriert hat.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <pre id="intentMsg" role="status" aria-live="polite"></pre>
+    </section>
+
+    <!-- EARLY CLAIM ($1 Fee) -->
+    <section class="card" id="earlyBox" style="display:none">
+      <h2>Claim (Early)</h2>
+      <p>
+        Du kannst deine vorgekauften INPI schon vor TGE erhalten. Dafür fällt eine
+        <b>Gebühr von 1&nbsp;USDC</b> an.
+      </p>
+      <p class="muted" style="margin:.25rem 0 .5rem">
+        <b>Kein Early-Claim?</b> Dann erhältst du vor dem offiziellen USDC-Pool einen
+        <b>Bonus-Airdrop von ca. 3–7&nbsp;%</b> auf deine offenen INPI.
+      </p>
+      <div class="stats"><div><b>Claimbar:</b> <span id="earlyExpected">—</span></div></div>
+      <div class="row" style="gap:.6rem;flex-wrap:wrap">
+        <button id="btnClaim">Claim (1&nbsp;USDC Fee)</button>
+        <span class="muted">Auszahlung erfolgt, sobald die Fee erkannt ist.</span>
+      </div>
+
+      <div id="earlyArea" class="card" style="margin-top:.8rem;display:none">
+        <h3>Fee zahlen (1&nbsp;USDC)</h3>
+        <div class="row" style="gap:1rem;align-items:center;flex-wrap:wrap">
+          <img id="early-qr" alt="Scan & pay Early-Claim Fee" width="240" height="240" style="border:1px solid #eee;border-radius:8px;display:none"/>
+          <div class="col">
+            <p style="margin:0 0 .5rem 0">
+              <b>So zahlst du:</b> QR-Code mit Wallet scannen <u>oder</u> Adresse kopieren und 1&nbsp;USDC (SPL) senden.
+            </p>
+            <p class="muted" id="earlyMsg"></p>
+            <div style="margin-top:.6rem">
+              <label class="muted">Optional: Fee-Tx-Signatur (beschleunigt die Zuordnung)</label>
+              <input id="earlySig" type="text" placeholder="Transaktionssignatur einfügen" style="width:100%"/>
+              <button id="btnEarlyConfirm" class="secondary" style="margin-top:.4rem">Ich habe gezahlt</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tokenomics (Details werden von app.js dynamisch ergänzt) -->
+    <section class="card">
+      <h2>Tokenomics</h2>
+      <div class="stats">
+        <div><b>Total Supply:</b> <span id="tokSupply">—</span></div>
+        <div><b>Governance Multisig:</b> <span id="govMultisig">—</span></div>
+        <div><b>Timelock:</b> <span id="timelock">—</span></div>
+      </div>
+      <p class="muted" style="margin-top:.6rem">
+        Anteile in Prozent basieren auf <code>dist_*_bps</code> (10 000 bps).
+        Stückzahlen basieren auf <code>supply_total</code>. Bei fehlenden Feldern werden Platzhalter gezeigt.
+      </p>
+    </section>
+
+    <!-- Markets / NFTs -->
+    <section class="card">
+      <h2>Handel & NFTs</h2>
+      <p>Offizielle Marktplatz-Links:</p>
+      <p class="row">
+        <a class="secondary" target="_blank" rel="noopener" href="https://magiceden.io/marketplace/inpi">
+          <button class="secondary">Magic Eden – INPI</button>
+        </a>
+        <a class="secondary" target="_blank" rel="noopener" href="https://www.tensor.trade/trade/inpi">
+          <button class="secondary">Tensor – INPI</button>
+        </a>
+        <a class="secondary" href="/pillary/app">
+          <button class="btn-accent">NFT&nbsp;Gallery</button>
+        </a>
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    <small>
+      © Inpinity • <a href="https://inpinity.online" target="_blank" rel="noopener">Website</a> •
+      <a href="/docs/whitepaper-v1.pdf" target="_blank" rel="noopener">Whitepaper</a> •
+      <a href="/.well-known/inpi.json" target="_blank" rel="noopener">Verifikation</a>
+    </small>
+  </footer>
+
+  <!-- Schema.org -->
+  <script type="application/ld+json">
+  {"@context":"https://schema.org","@type":"Cryptocurrency","name":"Inpinity Token","symbol":"INPI","url":"https://inpinity.online/token"}
+  </script>
+
+  <!-- Solana Web3 (global: solanaWeb3) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.98.4/lib/index.iife.min.js"></script>
+  <!-- App-Logik -->
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
