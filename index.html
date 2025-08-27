@@ -16,6 +16,12 @@
   <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin">
   <link rel="preconnect" href="https://inpinity.online" />
   <link rel="stylesheet" href="./styles.css" />
+  <!-- kleine Hilfs-Styles -->
+  <style>
+    .hidden{display:none}
+    .qr-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem;align-items:center}
+    .qr{border:1px solid #eee;border-radius:8px}
+  </style>
 </head>
 <body>
   <header class="bar">
@@ -34,7 +40,10 @@
       <div class="stats">
         <div><b>Presale-Phase:</b> <span id="presaleState">—</span></div>
         <div><b>TGE in:</b> <span id="tgeTime">tbd</span></div>
-        <div><b>Preis (Presale, live/fallback):</b> <span id="p0">—</span> <span id="gateHint" class="muted" style="margin-left:.4rem"></span></div>
+        <div>
+          <b>Preis (Presale, live/fallback):</b> <span id="p0">—</span>
+          <span id="gateBadge" class="muted" style="margin-left:.4rem"></span>
+        </div>
       </div>
     </section>
 
@@ -69,7 +78,7 @@
     <section>
       <h2>Presale Intent</h2>
       <label>USDC Betrag
-        <input id="inpAmount" type="number" min="1" step="0.01" value="10" />
+        <input id="inpAmount" type="number" min="1" step="0.000001" value="10" />
       </label>
       <div><small>Erwartete Zuteilung: <b id="expectedInpi">—</b></small></div>
       <div style="margin-top:.6rem;display:flex;gap:.6rem;flex-wrap:wrap">
@@ -79,9 +88,9 @@
 
       <div id="payArea" class="card" style="margin-top:.8rem;display:none">
         <h3>Jetzt bezahlen (Presale)</h3>
-        <div class="row" style="gap:1rem;align-items:center;flex-wrap:wrap">
-          <img id="inpi-qr" alt="Scan & pay via Solana Pay" width="240" height="240" style="border:1px solid #eee;border-radius:8px;display:none"/>
-          <div class="col">
+        <div class="qr-grid">
+          <img id="inpi-qr" class="qr" alt="Scan & pay via Solana Pay" width="240" height="240" style="display:none"/>
+          <div>
             <p style="margin:0 0 .5rem 0">
               <b>So zahlst du:</b> Scanne den QR-Code mit deiner Wallet <u>oder</u> kopiere die USDC-Adresse oben
               und sende den Betrag manuell (SPL-USDC, 6 Dezimalstellen).
@@ -113,11 +122,12 @@
         <span class="muted">Auszahlung erfolgt, sobald die Fee erkannt ist.</span>
       </div>
 
-      <div id="earlyArea" class="card" style="margin-top:.8rem;display:none">
+      <!-- wichtig: .hidden statt inline display:none, damit app.js es zeigen kann -->
+      <div id="earlyArea" class="card hidden" style="margin-top:.8rem">
         <h3>Fee zahlen (1&nbsp;USDC)</h3>
-        <div class="row" style="gap:1rem;align-items:center;flex-wrap:wrap">
-          <img id="early-qr" alt="Scan & pay Early-Claim Fee" width="240" height="240" style="border:1px solid #eee;border-radius:8px;display:none"/>
-          <div class="col">
+        <div class="qr-grid">
+          <img id="early-qr" class="qr" alt="Scan & pay Early-Claim Fee" width="240" height="240" style="display:none"/>
+          <div>
             <p style="margin:0 0 .5rem 0">
               <b>So zahlst du:</b> QR-Code mit Wallet scannen <u>oder</u> Adresse kopieren und 1&nbsp;USDC (SPL) senden.
             </p>
@@ -140,27 +150,9 @@
         <div><b>Governance Multisig:</b> <span id="govMultisig">—</span></div>
         <div><b>Timelock:</b> <span id="timelock">—</span></div>
       </div>
-      
       <p class="muted" style="margin-top:.6rem">
         Anteile in Prozent sind auf Basis der <code>dist_*_bps</code>-Werte (Basis: 10 000 bps).
         Stückzahlen basieren auf <code>supply_total</code>. Falls die API diese Felder (noch) nicht liefert, werden hier Platzhalter angezeigt.
-      </p>
-    </section>
-
-    <!-- Markets / NFTs -->
-    <section class="card">
-      <h2>Handel & NFTs</h2>
-      <p>Offizielle Marktplatz-Links:</p>
-      <p class="row">
-        <a class="secondary" target="_blank" rel="noopener" href="https://magiceden.io/marketplace/inpi">
-          <button class="secondary">Magic Eden – INPI</button>
-        </a>
-        <a class="secondary" target="_blank" rel="noopener" href="https://www.tensor.trade/trade/inpi">
-          <button class="secondary">Tensor – INPI</button>
-        </a>
-        <a class="secondary" href="/pillary/app">
-          <button class="btn-accent">NFT&nbsp;Gallery</button>
-        </a>
       </p>
     </section>
   </main>
