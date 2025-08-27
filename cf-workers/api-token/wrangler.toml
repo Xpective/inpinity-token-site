@@ -18,9 +18,9 @@ routes = [
 # KV-Bindings (IDs müssen exakt zu deinem Account passen)
 kv_namespaces = [
   # Globale Projekt-Konfiguration (wird vom Admin-Worker beschrieben)
-  { binding = "INPI_CONFIG",      id = "a82cb91c589b4b1a8c786807a49fe5f5"  },
+  { binding = "CONFIG",      id = "a82cb91c589b4b1a8c786807a49fe5f5"  },
   # Temporäre/Log-Daten zu Presale-Intents
-  { binding = "INPI_PRESALE",     id = "c7fe71ba6bd54e2a9ce76ed9c726a75d" },
+  { binding = "PRESALE",     id = "c7fe71ba6bd54e2a9ce76ed9c726a75d" },
   # Aggregierte Claims & Early-Claim-Jobs
   { binding = "INPI_CLAIMS", id = "485fc6ed252b445ba8ca18aaa9038e5c" }
 ]

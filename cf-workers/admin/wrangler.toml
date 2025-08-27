@@ -19,7 +19,7 @@ routes = [
 # KV-Bindings
 kv_namespaces = [
   # CONFIG = Projekt-Konfiguration (alle Keys hier rein)
-  { binding = "INPI_CONFIG", id = "a82cb91c589b4b1a8c786807a49fe5f5" }
+  { binding = "CONFIG", id = "a82cb91c589b4b1a8c786807a49fe5f5" }
 ]
 
 [vars]
