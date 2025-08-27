@@ -1,13 +1,8 @@
 // admin/worker.js
 // INPI Admin – minimal, fokus auf CONFIG + UI + Presets
 // ----------------------------------------------------
-// ✅ Wichtige Fixes ggü. deiner Version:
-// 1) KEIN Whitelist-/Key-Gate mehr → jedes KV-Key-Setzen geht durch (kein "key_not_allowed").
-// 2) Saubere Basic-Auth + optional IP-Allowlist; alle Admin-Endpunkte einheitlich.
-// 3) Praktische Endpunkte: list/get/set/setmany/delete/export/import/preset + /public/app-cfg.
-// 4) UI ist "self-contained" (eine HTML-Seite), fetch-Aufrufe bleiben same-origin.
-// 5) CSP erlaubt genau was nötig ist; keine cross-origin Überraschungen.
-// ----------------------------------------------------
+// Änderungen ggü. deiner Version:
+// - KV-Binding auf env.INPI_CONFIG umgestellt (passend zum wrangler.toml)
 
 export default {
   async fetch(req, env) {
@@ -25,20 +20,20 @@ export default {
     const url = new URL(req.url);
     const p = url.pathname;
 
-    // CORS Preflight (für curl/F12-Tests nett, obwohl wir same-origin sind)
+    // CORS Preflight
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: secHeaders() });
     }
 
     // ---- UI ----
     if (req.method === "GET" && (p === "/admin" || p === "/admin/")) {
-      return ui(); // unten definiert
+      return ui();
     }
 
     // ---- CONFIG: list keys (ALLE tatsächlichen Keys aus KV, keine Whitelist) ----
     if (req.method === "GET" && p === "/admin/config/keys") {
       const prefix = url.searchParams.get("prefix") || "";
-      const keys = await listAll(env.CONFIG, { prefix });
+      const keys = await listAll(env.INPI_CONFIG, { prefix });
       return J({ ok: true, keys });
     }
 
@@ -46,21 +41,21 @@ export default {
     if (req.method === "GET" && p === "/admin/config") {
       const qKey = url.searchParams.get("key");
       if (qKey) {
-        const v = await env.CONFIG.get(qKey);
+        const v = await env.INPI_CONFIG.get(qKey);
         return J({ ok: true, key: qKey, value: v ?? null });
       }
-      const keys = await listAll(env.CONFIG);
+      const keys = await listAll(env.INPI_CONFIG);
       const values = {};
-      await Promise.all(keys.map(async k => (values[k] = await env.CONFIG.get(k))));
+      await Promise.all(keys.map(async k => (values[k] = await env.INPI_CONFIG.get(k))));
       return J({ ok: true, keys, values });
     }
 
-    // ---- CONFIG: set one (kein Key-Gate) ----
+    // ---- CONFIG: set one ----
     if (req.method === "POST" && p === "/admin/config/set") {
       const body = await readJson(req); if (!body) return badCT();
       const { key, value } = body;
       if (!key) return J({ ok: false, error: "key_required" }, 400);
-      await env.CONFIG.put(String(key), String(value ?? ""));
+      await env.INPI_CONFIG.put(String(key), String(value ?? ""));
       return J({ ok: true });
     }
 
@@ -71,7 +66,7 @@ export default {
       if (!entries || typeof entries !== "object")
         return J({ ok: false, error: "entries_object_required" }, 400);
       await Promise.all(Object.entries(entries).map(([k, v]) =>
-        env.CONFIG.put(String(k), String(v ?? ""))
+        env.INPI_CONFIG.put(String(k), String(v ?? ""))
       ));
       return J({ ok: true, written: Object.keys(entries).length });
     }
@@ -81,15 +76,15 @@ export default {
       const body = await readJson(req); if (!body) return badCT();
       const { key } = body;
       if (!key) return J({ ok: false, error: "key_required" }, 400);
-      await env.CONFIG.delete(String(key));
+      await env.INPI_CONFIG.delete(String(key));
       return J({ ok: true, deleted: key });
     }
 
     // ---- CONFIG: export/import ----
     if (req.method === "GET" && p === "/admin/config/export") {
-      const keys = await listAll(env.CONFIG);
+      const keys = await listAll(env.INPI_CONFIG);
       const values = {};
-      await Promise.all(keys.map(async k => (values[k] = await env.CONFIG.get(k))));
+      await Promise.all(keys.map(async k => (values[k] = await env.INPI_CONFIG.get(k))));
       return new Response(JSON.stringify({ ts: Date.now(), values }, null, 2), {
         headers: {
           "content-type": "application/json",
@@ -104,23 +99,22 @@ export default {
       if (!values || typeof values !== "object")
         return J({ ok: false, error: "values_object_required" }, 400);
       await Promise.all(Object.entries(values).map(([k, v]) =>
-        env.CONFIG.put(String(k), String(v ?? ""))
+        env.INPI_CONFIG.put(String(k), String(v ?? ""))
       ));
       return J({ ok: true, written: Object.keys(values).length });
     }
 
     // ---- PRESET: INPI Defaults in einem Rutsch ----
     if (req.method === "POST" && p === "/admin/preset/inpi") {
-      // Body kann einzelne Felder überschreiben; sonst verwenden wir unsere Defaults
       const body = await readJson(req) || {};
       const entries = buildInpiPreset(body);
       await Promise.all(Object.entries(entries).map(([k, v]) =>
-        env.CONFIG.put(String(k), String(v))
+        env.INPI_CONFIG.put(String(k), String(v))
       ));
       return J({ ok: true, written: Object.keys(entries).length, entries });
     }
 
-    // ---- PUBLIC MAPPING für app.js (falls Frontend eine kompakte Map will) ----
+    // ---- PUBLIC MAPPING für app.js ----
     if (req.method === "GET" && p === "/public/app-cfg") {
       const map = await toAppCfg(env);
       return J(map);
@@ -132,7 +126,7 @@ export default {
     }
     if (req.method === "GET" && p === "/admin/env") {
       return J({ ok: true, env: {
-        CONFIG_KEYS: env.CONFIG_KEYS || null, // nur Info; wird NICHT genutzt
+        CONFIG_KEYS: env.CONFIG_KEYS || null, // Info; ungenutzt
         IP_ALLOWLIST: env.IP_ALLOWLIST || "",
         ADMIN_REALM: env.ADMIN_REALM || "",
         has_ADMIN_USER: !!env.ADMIN_USER,
@@ -149,7 +143,6 @@ export default {
 function basicOk(req, env) {
   const h = req.headers.get("authorization") || "";
   if (!h.startsWith("Basic ")) return false;
-  // Cloudflare Workers haben global atob/btoa
   const [u, p] = atob(h.slice(6)).split(":");
   return u === env.ADMIN_USER && p === env.ADMIN_PASS;
 }
@@ -157,7 +150,7 @@ function basicOk(req, env) {
 function ipOk(req, env) {
   const allow = (env.IP_ALLOWLIST || "")
     .split(",").map(s => s.trim()).filter(Boolean);
-  if (allow.length === 0) return true; // keine Liste → keine Einschränkung
+  if (allow.length === 0) return true;
   const ip = req.headers.get("cf-connecting-ip") || "";
   return allow.includes(ip);
 }
@@ -188,7 +181,6 @@ function J(x, status = 200) {
 }
 
 function secHeaders() {
-  // CSP ist streng, aber erlaubt genau das, was die UI braucht
   return {
     "x-content-type-options": "nosniff",
     "referrer-policy": "strict-origin-when-cross-origin",
@@ -207,31 +199,22 @@ function secHeaders() {
 /* ---- INPI Preset (unsere echten Defaults) ---- */
 function buildInpiPreset(over = {}) {
   const def = {
-    // On-chain / Adressen
     INPI_MINT:               "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
     creator_pubkey:          "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
-    presale_deposit_usdc:    "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6", // USDC-ATA des Creators
-
-    // Preise & Gate
-    presale_price_usdc:      "0.00031415", // 0.00031415 USDC / INPI
+    presale_deposit_usdc:    "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
+    presale_price_usdc:      "0.00031415",
     nft_gate_enabled:        "true",
-    gate_discount_bps:       "1000",       // 10%
+    gate_discount_bps:       "1000",
     gate_collection:         "6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ",
-
-    // Early Claim
     early_claim_enabled:     "true",
     early_flat_usdc:         "1",
     early_fee_usdc_ata:      "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
-
-    // Sonstiges
     public_rpc_url:          "https://api.mainnet-beta.solana.com",
     presale_state:           "pre",
-    airdrop_bonus_bps:       "600",        // 6% (für "nicht early claim")
-    cap_per_wallet_usdc:     "",           // leer = kein Cap
-    tge_ts:                  ""            // leer = tbd
+    airdrop_bonus_bps:       "600",
+    cap_per_wallet_usdc:     "",
+    tge_ts:                  ""
   };
-
-  // Overrides anwenden (nur Strings!)
   for (const [k, v] of Object.entries(over || {})) {
     if (v === undefined || v === null) continue;
     def[k] = String(v);
@@ -241,7 +224,7 @@ function buildInpiPreset(over = {}) {
 
 /* ---- Mapping für Frontend (/public/app-cfg) ---- */
 async function toAppCfg(env) {
-  const get = (k) => env.CONFIG.get(k);
+  const get = (k) => env.INPI_CONFIG.get(k);
   const [
     RPC, INPI_MINT, CREATOR, DEPOSIT_ATA, PRICE,
     DISC, COLL, EARLY_FEE, EARLY_FLAT
@@ -257,27 +240,19 @@ async function toAppCfg(env) {
     get("early_flat_usdc"),
   ]);
 
-  // Kompakt-Objekt, das dein /token/app.js direkt versteht (optional)
   return {
     CLUSTER: "mainnet-beta",
     RPC: RPC || "https://api.mainnet-beta.solana.com",
     CREATOR_WALLET: CREATOR || "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
-
     INPI_MINT: INPI_MINT || "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
     INPI_DECIMALS: 9,
-
     USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     USDC_DECIMALS: 6,
-
     CREATOR_USDC_ATA: DEPOSIT_ATA || "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
-
     PRICE_USDC_PER_INPI: Number(PRICE || "0.00031415"),
     DISCOUNT_BPS: Number(DISC || "1000"),
     COLLECTION_MINT: COLL || "6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ",
-
     EARLY_CLAIM_FEE_USDC: Number(EARLY_FLAT || "1.0"),
-
-    // Optional: wo die API liegt (falls Frontend das braucht)
     API_BASE: "https://inpinity.online/api/token"
   };
 }
@@ -432,7 +407,6 @@ function ui() {
     }
   }
 
-  // Events
   document.getElementById('btnReload').onclick = loadAll;
   document.getElementById('btnExport').onclick = () => { window.location.href = '/admin/config/export'; };
   document.getElementById('btnSet').onclick = async () => {
@@ -463,7 +437,6 @@ function ui() {
     }
   });
 
-  // Preset speichern (aus Feldern)
   document.getElementById('btnPreset').onclick = async () => {
     const pick = (id)=>{ const el=document.getElementById(id); const v=(el.value||'').trim(); return v? v : null; };
     const entries = {};
@@ -484,13 +457,11 @@ function ui() {
     alert('✔ Preset gespeichert'); await loadAll();
   };
 
-  // INPI Defaults (echte Projektwerte) direkt setzen
   document.getElementById('btnDefaults').onclick = async () => {
     await fetch('/admin/preset/inpi', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({}) });
     alert('✔ INPI Defaults gespeichert'); await loadAll();
   };
 
-  // Inline Save (Cmd/Ctrl+S) in Textareas
   document.addEventListener('keydown', async (e)=>{
     if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='s'){
       const el=document.activeElement;
