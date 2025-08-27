@@ -128,7 +128,6 @@ export default {
         has_ADMIN_PASS: !!env.ADMIN_PASS
       }});
     }
-
     return new Response("Not found", { status: 404, headers: secHeaders() });
   }
 };
