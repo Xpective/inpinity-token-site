@@ -1,19 +1,18 @@
 /* ===========================================
    Inpinity Token – Frontend (Phantom-first)
-   Pfad: /public/token/app.js
+   Pfad: /token/app.js
    =========================================== */
 
 /* ==================== KONFIG ==================== */
 const CFG = {
   RPC: "https://inpinity.online/rpc",
   INPI_MINT: "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
-  // KORRIGIERT: offizieller USDC Mint (Solana mainnet)
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   API_BASE: "https://inpinity.online/api/token",
 
-  // Fallbacks (nur wenn API nicht liefert)
-  PRICE_WITH_NFT_FALLBACK: 0.0003141,
-  PRICE_WITHOUT_NFT_FALLBACK: 0.003141,
+  // Fallbacks
+  PRICE_WITHOUT_NFT_FALLBACK: 0.00031415,
+  PRICE_WITH_NFT_FALLBACK:    0.000282735, // 10% Rabatt
   DEPOSIT_USDC_ATA_FALLBACK: "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
   TGE_TS_FALLBACK: Math.floor(Date.now()/1000) + 60*60*24*90,
 
@@ -33,12 +32,12 @@ const CFG = {
 /* ================ SOLANA / PHANTOM ================ */
 const { Connection } = solanaWeb3;
 const $ = (sel) => document.querySelector(sel);
+const el = (id) => document.getElementById(id);
 const short = (a) => (a?.slice(0,4) + "…" + a?.slice(-4));
 function fmt(n,d=2){ if(n==null||isNaN(n))return "–"; return Number(n).toLocaleString("de-DE",{maximumFractionDigits:d}); }
 function fmti(n){ if(n==null||isNaN(n))return "–"; return Number(n).toLocaleString("de-DE"); }
 function solscan(addr){ return `https://solscan.io/account/${addr}`; }
 function nowSec(){ return Math.floor(Date.now()/1000); }
-function el(id){ return document.getElementById(id); }
 
 /* ---------- Tokenomics UI ---------- */
 function ensureTokenomicsSection(){
@@ -111,6 +110,7 @@ const intentMsg = $("#intentMsg");
 const depositAddrEl = $("#depositAddr");
 const depositSolscanA = $("#depositSolscan");
 const depositOwnerEl = $("#depositOwner");
+const btnCopyDeposit = $("#btnCopyDeposit");
 
 // Presale QR
 const payArea = $("#payArea");
@@ -126,14 +126,11 @@ const btnEarlyConfirm = $("#btnEarlyConfirm");
 const qrClaimNow = $("#early-qr");
 
 // Badge bei Preis
-let gateBadge = document.getElementById("gateBadge");
-if (!gateBadge && p0?.parentElement) {
-  gateBadge = document.createElement("span");
-  gateBadge.id = "gateBadge";
-  gateBadge.style.marginLeft = ".5rem";
-  gateBadge.className = "muted";
-  p0.parentElement.appendChild(gateBadge);
-}
+let gateBadge = document.createElement("span");
+gateBadge.id = "gateBadge";
+gateBadge.style.marginLeft = ".5rem";
+gateBadge.className = "muted";
+p0?.parentElement?.appendChild(gateBadge);
 
 /* ---------- State ---------- */
 let connection = null, currentRpcUrl = null, provider = null, pubkey = null, POLL = null;
@@ -154,7 +151,7 @@ const STATE = {
 /* ---------- Preis/Erwartung ---------- */
 function currentPriceUSDC(){
   const w = STATE.price_with_nft_usdc, wo = STATE.price_without_nft_usdc;
-  if (wo && wo>0) return wo; if (w && w>0) return w; return null;
+  return STATE.gate_ok ? (w ?? wo) : (wo ?? w) ;
 }
 function calcExpectedInpi(usdc){
   if (!usdc||usdc<=0) return "–";
@@ -168,11 +165,9 @@ function updatePriceRow(){
   const woTxt=(wo&&wo>0)? Number(wo).toFixed(6)+" USDC" : "–";
   const actTxt=(active&&active>0)? Number(active).toFixed(6)+" USDC" : "–";
   const badge = STATE.gate_ok ? "NFT ✓" : "NFT ✗";
-  p0.textContent = `mit NFT: ${withTxt} • ohne NFT: ${woTxt} • dein aktiv: ${actTxt}`;
-  if (gateBadge) gateBadge.textContent = `(${badge})`;
+  p0.textContent = `mit NFT: ${withTxt} • ohne NFT: ${woTxt} • aktiv: ${actTxt}`;
+  gateBadge.textContent = `(${badge})`;
 }
-
-/* ---------- Intent-Button aktiv/inaktiv ---------- */
 function updateIntentAvailability(){
   let reason = (STATE.presale_state==="closed") ? "Der Presale ist geschlossen." : null;
   if (btnPresaleIntent){ btnPresaleIntent.disabled = !!reason; btnPresaleIntent.title = reason || ""; }
@@ -209,6 +204,14 @@ async function init(){
     if (btnConnect){ btnConnect.textContent="Phantom installieren"; btnConnect.onclick=()=>window.open("https://phantom.app","_blank"); }
   }
 
+  if (btnCopyDeposit){
+    btnCopyDeposit.onclick = async ()=>{
+      const val = depositAddrEl?.textContent?.trim(); if(!val) return;
+      await navigator.clipboard.writeText(val).catch(()=>{});
+      btnCopyDeposit.textContent = "Kopiert ✓"; setTimeout(()=>btnCopyDeposit.textContent="Kopieren", 1200);
+    };
+  }
+
   tickTGE(); setInterval(tickTGE, 1000);
   if (expectedInpi && inpAmount) expectedInpi.textContent = calcExpectedInpi(Number(inpAmount.value||"0"));
   if (earlyBox) earlyBox.style.display = STATE.early.enabled ? "block" : "none";
@@ -221,7 +224,7 @@ async function init(){
 /* ---------- Bonus-Hinweis ---------- */
 function setBonusNote(){
   const pct = (STATE.airdrop_bonus_bps/100).toFixed(2);
-  const text = `Hinweis: Wenn du NICHT früh claimst, erhältst du vor TGE/Pool einen zusätzlichen Bonus-Airdrop von ca. ${pct}% auf deine noch offenen INPI.`;
+  const text = `Hinweis: Kein Early-Claim → Bonus-Airdrop von ca. ${pct}% vor TGE/Pool auf offene INPI.`;
   const p = document.createElement("p"); p.className="muted"; p.style.marginTop=".5rem"; p.textContent=text;
 
   if (earlyBox){
@@ -253,19 +256,18 @@ async function refreshStatus(){
     STATE.price_with_nft_usdc    = ("price_with_nft_usdc" in (j||{}))    ? (Number(j.price_with_nft_usdc)||null)    : (Number(j?.presale_price_usdc)||null);
     STATE.price_without_nft_usdc = ("price_without_nft_usdc" in (j||{})) ? (Number(j.price_without_nft_usdc)||null) : (Number(j?.public_price_usdc)||null);
     if (STATE.price_with_nft_usdc==null && STATE.price_without_nft_usdc==null){
-      STATE.price_with_nft_usdc = CFG.PRICE_WITH_NFT_FALLBACK; STATE.price_without_nft_usdc = CFG.PRICE_WITHOUT_NFT_FALLBACK;
+      STATE.price_without_nft_usdc = CFG.PRICE_WITHOUT_NFT_FALLBACK;
+      STATE.price_with_nft_usdc    = CFG.PRICE_WITH_NFT_FALLBACK;
     }
 
-    // Early + Bonus
     const ec=j?.early_claim||{};
     STATE.early.enabled = !!ec.enabled;
     STATE.early.flat_usdc = Number(ec.flat_usdc || 1);
     STATE.early.fee_dest_wallet = ec.fee_dest_wallet || STATE.deposit_ata || null;
-    STATE.airdrop_bonus_bps = Number(j?.early_claim_fee_bps ? 0 : (j?.wait_bonus_bps ?? STATE.airdrop_bonus_bps)); // falls geliefert
+    STATE.airdrop_bonus_bps = Number(j?.airdrop_bonus_bps ?? STATE.airdrop_bonus_bps);
 
-    // Tokenomics
     STATE.supply_total = Number(j?.supply_total || CFG.SUPPLY_FALLBACK);
-    STATE.dist_bps = {
+    STATE.dist_bps = { ...CFG.DISTR_FALLBACK_BPS, ...{
       dist_presale_bps:        numOr(CFG.DISTR_FALLBACK_BPS.dist_presale_bps, j?.dist_presale_bps),
       dist_dex_liquidity_bps:  numOr(CFG.DISTR_FALLBACK_BPS.dist_dex_liquidity_bps, j?.dist_dex_liquidity_bps),
       dist_staking_bps:        numOr(CFG.DISTR_FALLBACK_BPS.dist_staking_bps, j?.dist_staking_bps),
@@ -274,11 +276,9 @@ async function refreshStatus(){
       dist_team_bps:           numOr(CFG.DISTR_FALLBACK_BPS.dist_team_bps, j?.dist_team_bps),
       dist_airdrop_nft_bps:    numOr(CFG.DISTR_FALLBACK_BPS.dist_airdrop_nft_bps, j?.dist_airdrop_nft_bps),
       dist_buyback_reserve_bps:numOr(CFG.DISTR_FALLBACK_BPS.dist_buyback_reserve_bps, j?.dist_buyback_reserve_bps)
-    };
+    }};
 
     if (presaleState) presaleState.textContent = STATE.presale_state;
-
-    // Deposit-Infos im UI
     if (depositAddrEl) depositAddrEl.textContent = STATE.deposit_ata || "—";
     if (depositSolscanA){ if (STATE.deposit_ata){ depositSolscanA.href=solscan(STATE.deposit_ata); depositSolscanA.style.display="inline"; } else depositSolscanA.style.display="none"; }
     if (depositOwnerEl) depositOwnerEl.textContent = STATE.deposit_owner || "—";
@@ -288,34 +288,31 @@ async function refreshStatus(){
     console.error(e);
     STATE.rpc_url=CFG.RPC; STATE.inpi_mint=CFG.INPI_MINT; STATE.usdc_mint=CFG.USDC_MINT;
     STATE.presale_state="pre"; STATE.tge_ts=CFG.TGE_TS_FALLBACK; STATE.deposit_ata=CFG.DEPOSIT_USDC_ATA_FALLBACK;
-    STATE.price_with_nft_usdc=CFG.PRICE_WITH_NFT_FALLBACK; STATE.price_without_nft_usdc=CFG.PRICE_WITHOUT_NFT_FALLBACK;
+    STATE.price_without_nft_usdc=CFG.PRICE_WITHOUT_NFT_FALLBACK; STATE.price_with_nft_usdc=CFG.PRICE_WITH_NFT_FALLBACK;
     STATE.supply_total=CFG.SUPPLY_FALLBACK; STATE.dist_bps={...CFG.DISTR_FALLBACK_BPS};
     if (presaleState) presaleState.textContent="API offline";
     if (depositAddrEl) depositAddrEl.textContent = STATE.deposit_ata || "—";
     if (depositSolscanA){ if (STATE.deposit_ata){ depositSolscanA.href=solscan(STATE.deposit_ata); depositSolscanA.style.display="inline"; } else depositSolscanA.style.display="none"; }
     if (depositOwnerEl) depositOwnerEl.textContent = "—";
-
     updatePriceRow(); updateIntentAvailability(); setBonusNote(); renderTokenomics(STATE.supply_total, STATE.dist_bps);
   }
 }
 function numOr(def, maybe){ const n=Number(maybe); return Number.isFinite(n)? n : def; }
 
-/* ---------- Wallet-Balances + Gate ---------- */
+/* ---------- Wallet ---------- */
 async function refreshBalances(){
   if (!pubkey) return;
   try{
     const url = `${CFG.API_BASE}/wallet/balances?wallet=${encodeURIComponent(pubkey.toBase58())}&t=${Date.now()}`;
     const r = await fetch(url, { headers:{accept:"application/json"}});
-    const txt = await r.text();
-    if (!r.ok) throw new Error(`${r.status} ${txt.slice(0,80)}`);
-    const j = JSON.parse(txt);
+    const j = await r.json();
 
     const usdc = Number(j?.usdc?.uiAmount ?? NaN);
     const inpi = Number(j?.inpi?.uiAmount ?? NaN);
     if (usdcBal) usdcBal.textContent = fmt(usdc,2);
     if (inpiBal) inpiBal.textContent = fmt(inpi,0);
 
-    STATE.gate_ok = !!j?.gate_ok; // nur Anzeige
+    STATE.gate_ok = !!j?.gate_ok;
     updatePriceRow(); updateIntentAvailability();
   } catch(e){
     console.error(e);
@@ -325,15 +322,11 @@ async function refreshBalances(){
     updatePriceRow(); updateIntentAvailability();
   }
 }
-
-/* ---------- Claim-Status ---------- */
 async function refreshClaimStatus(){
   if (!pubkey) return;
   try{
-    const r = await fetch(`${CFG.API_BASE}/claim/status?wallet=${pubkey.toBase58()}`, { headers:{accept:"application/json"} });
-    const txt = await r.text();
-    if (!r.ok) throw new Error(`${r.status} ${txt.slice(0,80)}`);
-    const st = JSON.parse(txt);
+    const r = await fetch(`${CFG.API_BASE}/claim/status?wallet=${pubkey.toBase58()}&t=${Date.now()}`, { headers:{accept:"application/json"} });
+    const st = await r.json();
 
     const pending = Number(st?.pending_inpi || 0);
     STATE.claimable_inpi = pending;
@@ -346,8 +339,6 @@ async function refreshClaimStatus(){
     if (earlyExpected) earlyExpected.textContent = "–";
   }
 }
-
-/* ---------- TGE Countdown ---------- */
 function tickTGE(){
   if (!tgeTime) return;
   if (!STATE.tge_ts){ tgeTime.textContent="tbd"; return; }
@@ -355,8 +346,6 @@ function tickTGE(){
   const d=Math.floor(secs/86400), h=Math.floor((secs%86400)/3600), m=Math.floor((secs%3600)/60), s=secs%60;
   tgeTime.textContent = `${d}d ${h}h ${m}m ${s}s`;
 }
-
-/* ---------- Wallet Connect ---------- */
 function onConnected(publicKey){
   pubkey = publicKey;
   if (walletAddr) walletAddr.textContent = publicKey.toBase58();
@@ -374,21 +363,18 @@ function onDisconnected(){
   updatePriceRow(); updateIntentAvailability(); clearInterval(POLL);
 }
 
-/* ---------- Input -> Erwartung ---------- */
+/* ---------- Inputs ---------- */
 if (inpAmount && expectedInpi){
   inpAmount.addEventListener("input", ()=>{
     const usdc=Number(inpAmount.value||"0"); expectedInpi.textContent=calcExpectedInpi(usdc);
   });
 }
-
-/* ---------- HowTo ---------- */
 if (btnHowTo){
   btnHowTo.addEventListener("click",()=> {
     alert(`Kurzanleitung:
 1) Phantom verbinden
-2) Intent senden → du erhältst den QR für die USDC-Zahlung
-3) Optional: Early-Claim (1 USDC Fee) im Abschnitt darunter
-Wenn du NICHT sofort claimst, bekommst du vor TGE/Pool einen Bonus-Airdrop (~${(STATE.airdrop_bonus_bps/100).toFixed(2)}%).`);
+2) Intent senden → QR für USDC-Zahlung
+3) Optional: Early-Claim (1 USDC)`);
   });
 }
 
@@ -407,7 +393,7 @@ if (btnPresaleIntent){
 
     inFlight=true; if (intentMsg) intentMsg.textContent="Prüfe Caps & registriere Intent …";
     try{
-      // signMessage (optional)
+      // optional signMessage
       let sig_b58=null, msg_str=null;
       if (provider?.signMessage){
         msg_str = `INPI Presale Intent\nwallet=${pubkey.toBase58()}\namount_usdc=${usdc}\nts=${Date.now()}`;
@@ -424,19 +410,19 @@ if (btnPresaleIntent){
       const j = await r.json().catch(()=>null);
       if (!r.ok || !j?.ok) throw new Error(j?.error || j?.detail || "Intent fehlgeschlagen");
 
-      // QR für die USDC-Zahlung
+      // QR für die USDC-Zahlung (neue Feldnamen)
+      const qrUrl = j?.qr_contribute?.qr_url || j?.qr_url || null;
       if (payArea) payArea.style.display="block";
-      if (qrContrib && j.qr_url){ qrContrib.src = j.qr_url; qrContrib.style.display="block"; }
+      if (qrContrib && qrUrl){ qrContrib.src = qrUrl; qrContrib.style.display="block"; }
 
-      // Info-Text
       if (intentMsg){
         intentMsg.textContent="";
-        const p1=document.createElement("p"); p1.textContent=`✅ Intent registriert. Bitte ${usdc} USDC via QR senden (USDC/SPL).`;
+        const p1=document.createElement("p"); p1.textContent=`✅ Intent registriert. Bitte ${usdc} USDC via QR senden (SPL-USDC).`;
         const p2=document.createElement("p"); p2.textContent=`Optional: Nutze unten den Early-Claim (1 USDC Fee) für sofortige Gutschrift.`;
         intentMsg.appendChild(p1); intentMsg.appendChild(p2); setBonusNote();
       }
 
-      await refreshStatus(); // evtl. Owner/Deposit anzeigen
+      await refreshStatus();
     }catch(e){
       console.error(e); alert(`Intent fehlgeschlagen:\n${e?.message||e}`);
     }finally{ inFlight=false; }
@@ -449,18 +435,17 @@ async function startEarlyFlow(){
   if (!STATE.early.enabled) return alert("Early-Claim ist derzeit deaktiviert.");
   try{
     earlyArea?.classList?.remove("hidden");
-    if (earlyMsg) earlyMsg.textContent="Erzeuge Solana Pay Link …";
+    if (earlyMsg) earlyMsg.textContent="Erzeuge Solana-Pay Link …";
     const r = await fetch(`${CFG.API_BASE}/claim/early-intent`, {
       method:"POST", headers:{ "content-type":"application/json", accept:"application/json" },
       body: JSON.stringify({ wallet: pubkey.toBase58() })
     });
     const j = await r.json().catch(()=>null);
     if (!r.ok || !j?.ok) throw new Error(j?.error || "Early-Intent fehlgeschlagen");
-    if (qrClaimNow) { qrClaimNow.src = j.qr_url; qrClaimNow.style.display="block"; }
+    if (qrClaimNow && j.qr_url) { qrClaimNow.src = j.qr_url; qrClaimNow.style.display="block"; }
     if (earlyMsg) earlyMsg.textContent = `Sende ${STATE.early.flat_usdc} USDC (QR). Danach unten die Transaktions-Signatur eintragen und bestätigen.`;
   }catch(e){ console.error(e); alert(e?.message||e); }
 }
-
 async function confirmEarlyFee(){
   if (!pubkey) return alert("Wallet verbinden.");
   const sig=(earlySig?.value||"").trim();
