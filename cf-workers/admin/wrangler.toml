@@ -7,21 +7,17 @@ routes = [
 ]
 
 kv_namespaces = [
-  # ← WICHTIG: exakt die ID deiner INPI_CONFIG (bei dir: a82cb9...)
   { binding = "CONFIG", id = "a82cb91c589b4b1a8c786807a49fe5f5" },
-  # optionales Audit-Log (kannst du weglassen)
+  # optional
   { binding = "OPS",    id = "74e1d3dc6d84483b9454859750726be5" }
 ]
 
 [vars]
-IP_ALLOWLIST     = ""            # leer = alle IPs erlaubt
-ADMIN_REALM      = "INPI Admin"
+IP_ALLOWLIST = ""
+ADMIN_REALM = "INPI Admin"
 ADMIN_TOTP_PERIOD = "30"
 ADMIN_TOTP_WINDOW = "1"
+CRON_BASE = "https://inpinity.online/cron"
+OPS_HMAC_ALGO = "SHA-256"
 
-CRON_BASE       = "https://inpinity.online/cron"
-OPS_HMAC_ALGO   = "SHA-256"
-
-# NICHT MEHR NÖTIG (und absichtlich unbenutzt):
-# CONFIG_ALLOW_ALL = "true"
-# CONFIG_KEYS      = "*"
+# WICHTIG: KEIN CONFIG_KEYS, KEIN CONFIG_ALLOW_ALL hier mehr!
