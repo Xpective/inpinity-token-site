@@ -29,4 +29,5 @@ OPS_HMAC_ALGO = "SHA-256"
 # Erlaubte Keys in der Admin-Oberfläche (Whitelist)
 #[vars]
 # ... deine bestehenden Vars ...
-CONFIG_KEYS ="*"
+CONFIG_ALLOW_ALL = "true"
+CONFIG_KEYS = "*"
