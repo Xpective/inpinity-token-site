@@ -422,4 +422,135 @@ async function saveClaim(env, wallet, claim){
 
 /* --------- RPC / Balance ---------- */
 async function getRpc(env){
-  const fromCfg = await env.CONFIG
+  const fromCfg = await env.CONFIG.get("public_rpc_url").catch(()=>null);
+  if (fromCfg) return fromCfg;
+  if (env.RPC_URL) return env.RPC_URL;
+  if (env.HELIUS_API_KEY) return `https://rpc.helius.xyz/?api-key=${env.HELIUS_API_KEY}`;
+  return "https://api.mainnet-beta.solana.com";
+}
+async function rpcCall(rpcUrl, method, params){
+  const r = await fetch(rpcUrl, {
+    method:"POST", headers:{ "content-type":"application/json" },
+    body: JSON.stringify({ jsonrpc:"2.0", id:1, method, params })
+  });
+  const txt = await r.text();
+  if (!r.ok) throw new Error(`rpc_http_${r.status}: ${txt.slice(0,160)}`);
+  let j; try { j = JSON.parse(txt); } catch { throw new Error(`rpc_bad_json: ${txt.slice(0,160)}`); }
+  if (j.error) throw new Error(j.error?.message || "rpc_error");
+  if (!("result" in j)) throw new Error("rpc_no_result");
+  return j.result;
+}
+async function getTxSafe(rpc, sig){
+  return await rpcCall(rpc, "getTransaction", [String(sig), { maxSupportedTransactionVersion: 0, commitment:"confirmed" }])
+         .catch(()=>null);
+}
+async function getAtaOwnerSafe(rpc, ata){
+  try {
+    const r = await rpcCall(rpc, "getAccountInfo", [ata, { encoding:"jsonParsed", commitment:"confirmed" }]);
+    const o = r?.value?.data?.parsed?.info?.owner; 
+    return isAddr(o)? o : null;
+  } catch { return null; }
+}
+async function getSplBalance(rpcUrl, owner, mint){
+  let res = await rpcCall(rpcUrl, "getTokenAccountsByOwner",
+    [owner, { mint }, { encoding:"jsonParsed", commitment:"confirmed" }]).catch(()=>null);
+
+  // Fallback: Token-2022 Accounts filtern
+  if (!res || (res.value||[]).length === 0) {
+    res = await rpcCall(rpcUrl, "getTokenAccountsByOwner",
+      [owner, { programId: TOKEN_2022_PID }, { encoding:"jsonParsed", commitment:"confirmed" }]).catch(()=>null);
+    if (res && Array.isArray(res.value)) {
+      res.value = res.value.filter(v => v?.account?.data?.parsed?.info?.mint === mint);
+    }
+  }
+
+  const arr = res?.value || [];
+  let raw = 0n, decimals = 0;
+  for (const it of arr) {
+    const ta = it?.account?.data?.parsed?.info?.tokenAmount;
+    if (!ta) continue;
+    decimals = Number(ta?.decimals ?? decimals ?? 0);
+    raw += BigInt(ta?.amount || "0");
+  }
+  const den = 10n ** BigInt(decimals || 0);
+  const ui = Number(raw) / Number(den || 1n);
+  return { amount: raw.toString(), decimals, uiAmount: ui, uiAmountString: String(ui) };
+}
+
+/* --------- Math / Parsing --------- */
+function ownerDeltaUSDC(pre, post, owner){
+  return round6(Math.max(0, sumOwnerUSDC(pre, owner) - sumOwnerUSDC(post, owner)));
+}
+function accountDeltaUSDC(pre, post, account){
+  const p0 = findUSDC(pre, account), p1 = findUSDC(post, account);
+  if (!p0 && !p1) return 0;
+  return round6(Math.max(0, (p1?.uiAmount||0) - (p0?.uiAmount||0)));
+}
+function sumOwnerUSDC(arr, owner){
+  let s = 0;
+  for (const b of arr || []) {
+    if (b.mint===USDC_MINT && b.owner===owner) {
+      const u = b.uiTokenAmount?.uiAmount ?? numFrom(b.uiTokenAmount?.amount, b.uiTokenAmount?.decimals);
+      s += Number(u||0);
+    }
+  } return round6(s);
+}
+function findUSDC(arr, account){
+  for (const b of arr || []) {
+    if (b.mint===USDC_MINT && b.account===account) {
+      const u = b.uiTokenAmount?.uiAmount ?? numFrom(b.uiTokenAmount?.amount, b.uiTokenAmount?.decimals);
+      return { uiAmount: Number(u||0) };
+    }
+  } return null;
+}
+
+/* --------- Small utils --------- */
+function withWalletDeepLinks(solanaPayUrl){
+  return {
+    solana_pay_url: solanaPayUrl,
+    phantom_universal_url: `https://phantom.app/ul/v1/solana-pay?link=${encodeURIComponent(solanaPayUrl)}`,
+    solflare_universal_url: `https://solflare.com/ul/v1/solana-pay?link=${encodeURIComponent(solanaPayUrl)}`,
+    qr_url: `${QR_SVC}${encodeURIComponent(solanaPayUrl)}`
+  };
+}
+function solanaPay({ to, amount, spl, label, msg }){
+  const qp = new URLSearchParams();
+  if (amount!=null) qp.set("amount", String(round6(Number(amount)||0)));
+  if (spl) qp.set("spl-token", spl);
+  if (label) qp.set("label", label);
+  if (msg) qp.set("message", msg);
+  return `solana:${to}?${qp.toString()}`;
+}
+
+/* --------- Parse/Guard helpers --------- */
+function isAddr(s){ return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(s||"")); }
+function isSig(s){ return /^[1-9A-HJ-NP-Za-km-z]{43,88}$/.test(String(s||"")); }
+function firstAddr(...xs){ for (const x of xs){ if (isAddr(x)) return x; } return ""; }
+function firstNum(...xs){ for (const x of xs){ const n = Number(x); if (Number.isFinite(n)) return n; } return null; }
+function toNum(x, d=0){ const n = Number(x); return Number.isFinite(n)? n : d; }
+function numOrNull(x){ const n = Number(x); return Number.isFinite(n)? n : null; }
+function isTrue(x){ return String(x||"").toLowerCase()==="true"; }
+function round6(x){ return Math.round(Number(x||0)*1e6)/1e6; }
+function numFrom(amountStr, decimals){ const a=BigInt(amountStr||"0"); const d=Number(decimals||0); const den=10n**BigInt(d); return Number(a)/Number(den||1n); }
+function normalizeSecs(v){ if (v==null) return null; let t=Number(v); if (!Number.isFinite(t)||t<=0) return null; if (t>1e12) t=Math.floor(t/1000); return t; }
+async function isJson(req){ return (req.headers.get("content-type")||"").toLowerCase().includes("application/json"); }
+function adminOk(req, env){ return (req.headers.get("x-admin-key")||"") === String(env.RECONCILE_KEY||""); }
+function safeJson(txt){ try { return JSON.parse(txt); } catch { return null; } }
+function noContent(){ return new Response(null, { status:204, headers: cors() }); }
+function J(obj, status=200, extra={}){
+  return new Response(JSON.stringify(obj), { status, headers:{ "content-type":"application/json; charset=utf-8",
+    "cache-control":"no-store", ...sec(), ...cors(), ...extra }});
+}
+function cors(){ return {
+  "access-control-allow-origin":"*",
+  "access-control-allow-methods":"GET,POST,OPTIONS",
+  "access-control-allow-headers":"content-type,x-admin-key",
+  "access-control-max-age":"86400"
+};}
+function sec(){ return {
+  "x-content-type-options":"nosniff",
+  "referrer-policy":"strict-origin-when-cross-origin",
+  "permissions-policy":"geolocation=(), microphone=(), camera=()",
+  "strict-transport-security":"max-age=31536000; includeSubDomains; preload",
+  "x-proxy":"api-token"
+};}
