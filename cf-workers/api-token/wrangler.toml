@@ -9,10 +9,14 @@ routes = [
 kv_namespaces = [
   { binding = "CONFIG",      id = "a82cb91c589b4b1a8c786807a49fe5f5"  },
   { binding = "PRESALE",     id = "c7fe71ba6bd54e2a9ce76ed9c726a75d" },
-  { binding = "INPI_CLAIMS",      id = "485fc6ed252b445ba8ca18aaa9038e5c" }
+  { binding = "INPI_CLAIMS", id = "485fc6ed252b445ba8ca18aaa9038e5c" }
 ]
 
 [vars]
+# Hard-Caps für den Intent-Input
 PRESALE_MIN_USDC = "0"
 PRESALE_MAX_USDC = "25000"
+
+# RPC: Reihenfolge in deinem Code ist: CONFIG.public_rpc_url > RPC_URL > Helius
 RPC_URL = "https://api.mainnet-beta.solana.com"
+HELIUS_API_KEY = "d95932bb-5385-4d84-ad18-7fc66e014d58"

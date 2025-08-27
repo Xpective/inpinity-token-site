@@ -1,0 +1,10 @@
+name = "rpc-proxy"
+main = "worker.js"
+compatibility_date = "2024-12-01"
+
+routes = [
+  { pattern = "inpinity.online/rpc", zone_name = "inpinity.online" }
+]
+
+[vars]
+UPSTREAM = "https://rpc.helius.xyz/?api-key=d95932bb-5385-4d84-ad18-7fc66e014d58"
