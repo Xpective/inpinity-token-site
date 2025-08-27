@@ -1,3 +1,6 @@
+<!-- =========================================================
+     /public/token/index.html  (Links + Buttons ergänzt)
+     ========================================================= -->
 <!doctype html>
 <html lang="de">
 <head>
@@ -6,6 +9,11 @@
   <title>Inpinity (INPI) – Presale</title>
   <meta name="description" content="Inpinity Token (INPI) – Presale mit USDC auf Solana, Early-Claim & NFT-Rabatt." />
 
+  <!--
+    ✅ CSP bleibt streng. Externe Seiten (Tensor, Magic Eden, Pillary)
+       werden nur als <a>-Links geöffnet, brauchen daher keine Freigabe
+       in script/img/connect-src.
+  -->
   <meta http-equiv="Content-Security-Policy"
         content="
           default-src 'self';
@@ -27,7 +35,12 @@
   <header class="bar">
     <img src="./inpi.png" class="logo" alt="INPI Logo"/>
     <h1>Inpinity (INPI)</h1>
-    <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center">
+
+    <!-- 🔗 Oben prominenter Button zur PI Pyramide -->
+    <div class="row" style="margin-left:auto;gap:.5rem;align-items:center">
+      <a class="btn btn-accent" href="https://inpinity.online/pillary/app" target="_blank" rel="noopener">PI&nbsp;Pyramide</a>
+
+      <!-- Wallet + Connect -->
       <code id="walletAddr">—</code>
       <button id="btnConnect" disabled>Verbinden</button>
     </div>
@@ -83,11 +96,16 @@
       <div id="payArea" class="card" style="margin-top:.8rem;display:none">
         <h3>Jetzt bezahlen (Presale)</h3>
         <div class="row" style="gap:1rem;align-items:center;flex-wrap:wrap">
-          <img id="inpi-qr" alt="Scan & pay via Solana Pay" width="240" height="240" style="border:1px solid #eee;border-radius:8px;display:none"/>
+          <img id="inpi-qr" alt="Scan & pay via Solana Pay" width="240" height="240" class="qr" style="display:none"/>
           <div class="col">
             <p style="margin:0 0 .5rem 0">
               <b>So zahlst du:</b> QR mit Wallet scannen <u>oder</u> USDC-Adresse oben kopieren (SPL-USDC, 6 Dezimalstellen).
             </p>
+            <!-- 🔗 Deep-Links, werden von app.js gesetzt -->
+            <div class="row" style="gap:.5rem;flex-wrap:wrap;margin-top:.25rem">
+              <a id="link-phantom"  class="btn secondary" href="#" target="_blank" rel="noopener" style="display:none">In&nbsp;Phantom&nbsp;öffnen</a>
+              <a id="link-solflare" class="btn secondary" href="#" target="_blank" rel="noopener" style="display:none">In&nbsp;Solflare&nbsp;öffnen</a>
+            </div>
             <p class="muted" style="margin:.4rem 0 0 0">Bitte vom <b>selben Wallet</b> senden, das den Intent registriert hat.</p>
           </div>
         </div>
@@ -108,7 +126,7 @@
       <div id="earlyArea" class="card" style="margin-top:.8rem;display:none">
         <h3>Fee zahlen (1&nbsp;USDC)</h3>
         <div class="row" style="gap:1rem;align-items:center;flex-wrap:wrap">
-          <img id="early-qr" alt="Scan & pay Early-Claim Fee" width="240" height="240" style="border:1px solid #eee;border-radius:8px;display:none"/>
+          <img id="early-qr" alt="Scan & pay Early-Claim Fee" width="240" height="240" class="qr" style="display:none"/>
           <div class="col">
             <p style="margin:0 0 .5rem 0"><b>So zahlst du:</b> QR scannen <u>oder</u> Adresse kopieren und 1&nbsp;USDC (SPL) senden.</p>
             <p class="muted" id="earlyMsg"></p>
@@ -122,6 +140,23 @@
       </div>
     </section>
 
+    <!-- 🔗 NFT-Links & Tools (unten als Buttons) -->
+    <section class="card" id="linksBox">
+      <h2>NFT Collection &amp; Tools</h2>
+      <div class="row" style="gap:.6rem;flex-wrap:wrap">
+        <a class="btn btn-accent" href="https://www.tensor.trade/trade/3417ce15-8414-4ded-b892-09d7b5cea876" target="_blank" rel="noopener">
+          Tensor – INPI Collection
+        </a>
+        <a class="btn btn-accent" href="https://magiceden.io/marketplace/inpi?gr=&gr=" target="_blank" rel="noopener">
+          Magic&nbsp;Eden – INPI Collection
+        </a>
+        <a class="btn secondary" href="https://inpinity.online/pillary/app" target="_blank" rel="noopener">
+          PI&nbsp;Pyramide
+        </a>
+      </div>
+      <p class="muted" style="margin-top:.5rem">Öffnet neue Seite. Keine Wallet-/Transaktionsdaten werden hier geteilt.</p>
+    </section>
+
     <!-- Tokenomics-Box wird von app.js dynamisch eingefügt -->
   </main>
 
@@ -133,7 +168,232 @@
     </small>
   </footer>
 
+  <!-- web3.js IIFE (wird von app.js als Fallback auch nochmal abgesichert) -->
   <script defer src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.98.4/lib/index.iife.min.js"></script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>
+
+
+<!-- =========================================================
+     /public/token/styles.css  (kleine Ergänzung: .btn-Klasse,
+     damit <a>-Links wie Buttons aussehen; Farbschema: schwarz,
+     cyan, lila/purpur – bereits enthalten)
+     ========================================================= -->
+<style>
+/* ===============================
+   Inpinity (INPI) – Token Styles
+   Pfad: /public/token/styles.css
+   =============================== */
+
+:root{
+  color-scheme: light dark;
+  --bg:            #0b0d10;
+  --bg-elev:       #12151a;
+  --text:          #e9eef6;
+  --muted:         #9fb0c3;
+  --line:          #2a3240;
+  --primary:       #6aa2ff;
+  --primary-ink:   #0a1a33;
+  --ok:            #29cc7a;
+  --warn:          #ffb84d;
+  --error:         #ff5d73;
+  --card-radius:   14px;
+  --space:         16px;
+  --shadow:        0 10px 30px rgba(0,0,0,.25);
+  --font:          system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell;
+
+  /* Akzente */
+  --accent-purple: #8b5cf6; /* Purpur/Lila */
+  --accent-cyan:   #06b6d4; /* Cyan */
+  --accent-ink:    #03060a; /* Kontrasttext auf Gradients */
+}
+
+@media (prefers-color-scheme: light){
+  :root{
+    --bg:        #ffffff;
+    --bg-elev:   #f7f9fc;
+    --text:      #111322;
+    --muted:     #5a6675;
+    --line:      #e7ebf2;
+    --primary:   #1d64ff;
+    --primary-ink:#f0f5ff;
+    --accent-ink: #00131a;
+  }
+}
+
+*{ box-sizing: border-box; }
+html,body{ height:100%; }
+body{
+  margin:0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.45 var(--font);
+}
+
+/* ----- Top Bar ----- */
+.bar{
+  position: sticky; top:0; z-index: 10;
+  display:flex; align-items:center; gap: 14px;
+  padding: 12px 20px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(6px);
+}
+.logo{ width:44px; height:44px; border-radius: 11px; box-shadow: var(--shadow); }
+.bar h1{ font-size: 20px; margin:0; font-weight:700; letter-spacing:.3px; }
+
+/* ----- Layout ----- */
+main{ max-width: 960px; margin: 0 auto; padding: 28px 20px 80px; }
+section{ margin: 28px 0; }
+footer{
+  border-top: 1px solid var(--line);
+  padding: 18px 20px;
+  text-align:center;
+  color: var(--muted);
+}
+
+/* ----- Typography ----- */
+h2{ margin: 0 0 12px; font-size: 20px; }
+.muted{ color: var(--muted); }
+a{ color: var(--primary); text-decoration: none; }
+a:hover{ text-decoration: underline; }
+
+/* ----- Card / Panels ----- */
+.card{
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+  border-radius: var(--card-radius);
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+
+/* ----- Grid für Key-Value Stat Blöcke ----- */
+.stats{
+  display:grid;
+  gap: 10px 14px;
+  grid-template-columns: repeat(auto-fit, minmax(220px,1fr));
+}
+.stats > div{
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: var(--bg-elev);
+}
+
+/* ----- Forms ----- */
+label{ display:block; margin: 10px 0 6px; color: var(--muted); }
+input{
+  width:100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  outline: none;
+}
+input:focus-visible{ border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 25%, transparent); }
+
+/* ----- Buttons & Link-Buttons ----- */
+button, .btn{
+  appearance: none; border:0; cursor: pointer;
+  display:inline-block; text-decoration:none;
+  padding: 10px 14px; border-radius: 12px;
+  background: var(--primary); color: white; font-weight: 600;
+  transition: transform .06s ease, opacity .2s ease, box-shadow .2s ease, filter .2s ease;
+}
+button.secondary, .btn.secondary{
+  background: transparent; color: var(--text);
+  border: 1px solid var(--line);
+}
+button:disabled{ opacity:.55; cursor:not-allowed }
+button:active, .btn:active{ transform: translateY(1px); }
+button:focus-visible, .btn:focus-visible{
+  outline: 3px solid color-mix(in oklab, var(--primary) 60%, transparent);
+  outline-offset: 2px;
+}
+
+/* ----- Akzent-Button (Purpur → Cyan) ----- */
+button.btn-accent, .btn.btn-accent{
+  background: linear-gradient(135deg, var(--accent-purple), var(--accent-cyan));
+  color: var(--accent-ink);
+  border: 0;
+  box-shadow: 0 6px 18px rgba(3, 6, 10, .35);
+}
+button.btn-accent:hover, .btn.btn-accent:hover{ filter: brightness(1.05); }
+button.btn-accent:focus-visible, .btn.btn-accent:focus-visible{
+  outline: 3px solid color-mix(in oklab, var(--accent-cyan) 60%, transparent);
+  outline-offset: 2px;
+}
+
+/* ----- Callouts ----- */
+.callout{ border:1px solid var(--line); padding:12px 14px; border-radius:12px; }
+.callout.ok{ border-color: color-mix(in oklab, var(--ok) 60%, var(--line)); }
+.callout.err{ border-color: color-mix(in oklab, var(--error) 60%, var(--line)); }
+
+/* ----- Code / Pre ----- */
+code{
+  background: var(--primary-ink);
+  color: var(--text);
+  padding: 2px 6px; border-radius: 8px; border: 1px solid var(--line);
+  word-break: break-all;
+}
+pre{
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+  max-height: 360px; overflow:auto;
+}
+
+/* ----- Utilities ----- */
+.row{ display:flex; gap:10px; flex-wrap:wrap; }
+.col{ display:flex; flex-direction:column; gap:.4rem; }
+.hidden{ display:none !important; }
+
+/* Pill/Badge (z.B. Gate-Hinweis) */
+.badge{ display:inline-block; padding:3px 8px; border-radius:999px; font-size:12px; border:1px solid var(--line); }
+.badge.ok{ background: color-mix(in oklab, var(--ok) 22%, transparent); border-color: color-mix(in oklab, var(--ok) 45%, var(--line)); }
+.badge.warn{ background: color-mix(in oklab, var(--warn) 22%, transparent); border-color: color-mix(in oklab, var(--warn) 45%, var(--line)); }
+.badge.err{ background: color-mix(in oklab, var(--error) 22%, transparent); border-color: color-mix(in oklab, var(--error) 45%, var(--line)); }
+
+/* Gate-Badge neutral (app.js setzt nur Text) */
+#gateBadge{
+  display:inline-block; padding:2px 8px; border-radius:999px;
+  border:1px solid var(--line); font-size:12px; color: var(--muted);
+}
+
+/* QR-Bereich */
+.qr-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1rem; align-items:center; }
+.qr{ border:1px solid var(--line); border-radius:8px; }
+
+/* Tokenomics Tabelle (wird von app.js erzeugt) */
+#tokTable{ width:100%; border-collapse: collapse; }
+#tokTable th, #tokTable td{
+  padding:.4rem; border-bottom:1px solid var(--line);
+}
+#tokTable th{ text-align:left; color: var(--muted); font-weight:600; }
+#tokTable td:last-child, #tokTable th:last-child{ text-align:right; }
+
+/* Skeleton */
+.skel{ position:relative; overflow:hidden; background: var(--bg-elev); }
+.skel::after{
+  content:""; position:absolute; inset:0;
+  background: linear-gradient(90deg, transparent, #ffffff18, transparent);
+  animation: shimmer 1.4s infinite;
+}
+@keyframes shimmer{ 0%{ transform: translateX(-100%);} 100%{ transform: translateX(100%);} }
+
+/* ----- Responsive Tweaks ----- */
+@media (max-width: 560px){
+  .bar h1{ font-size: 18px; }
+  .logo{ width:38px; height:38px; }
+  main{ padding: 20px 16px 60px; }
+}
+
+/* ----- Motion / Accessibility ----- */
+@media (prefers-reduced-motion: reduce){
+  *{ animation: none !important; transition: none !important; }
+}
+</style>
