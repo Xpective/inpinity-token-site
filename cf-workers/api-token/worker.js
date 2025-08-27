@@ -16,11 +16,12 @@ export default {
       const p = url.pathname;
       if (req.method === "OPTIONS") return noContent();
 
+      /* ---------- HEALTH ---------- */
       if (req.method === "GET" && p === "/api/token/ping") {
         return J({ ok: true, service: "inpi-api", ts: Date.now() });
       }
 
-      /* ---------- STATUS ---------- */
+      /* ---------- STATUS (Frontend liest hier fast alles) ---------- */
       if (req.method === "GET" && p === "/api/token/status") {
         const cfg = await readCfg(env);
         const rpc = await getRpc(env);
@@ -28,32 +29,46 @@ export default {
         const depoAta   = firstAddr(cfg.presale_deposit_usdc, DEPOSIT_USDC_ATA_FALLBACK);
         const depoOwner = isAddr(depoAta) ? (await getAtaOwnerSafe(rpc, depoAta)) : null;
 
-        const base = pickBasePrice(cfg);
-        const discBps = toNum(cfg.gate_discount_bps, 1000); // 10% default
+        // Preise: Base aus KV, daraus "mit/ohne NFT" berechnen
+        const base = pickBasePrice(cfg); // Number | null
+        const discBps = toNum(cfg.gate_discount_bps, 1000); // default -10%
         const priceWithGate    = base != null ? round6(base * (1 - discBps / 10000)) : null;
         const priceWithoutGate = base;
 
-        // Caps (aus KV oder ENV-Vars)
+        // Caps aus KV → sonst aus ENV
         const presale_min_usdc = firstNum(cfg.presale_min_usdc, env.PRESALE_MIN_USDC, null);
         const presale_max_usdc = firstNum(cfg.presale_max_usdc, env.PRESALE_MAX_USDC, null);
+
+        // Tokenomics (dist_*_bps): wenn im KV gesetzt → als Number liefern
+        const dist = pickDists(cfg);
 
         return J({
           rpc_url: rpc,
           inpi_mint: cfg.INPI_MINT || "",
           usdc_mint: USDC_MINT,
+
           presale_state: cfg.presale_state || "pre",
           tge_ts: normalizeSecs(cfg.tge_ts),
 
+          // aktiv verwendete Preise
           price_with_nft_usdc: priceWithGate,
           price_without_nft_usdc: priceWithoutGate,
 
+          // Basis-Preise (für Frontend-Fallback/Anzeige)
+          presale_price_usdc: numOrNull(cfg.presale_price_usdc),
+          public_mint_price_usdc: numOrNull(cfg.public_mint_price_usdc),
+          public_price_usdc: numOrNull(cfg.public_price_usdc),
+
+          // Deposit / Owner (Owner = Wallet der ATA)
           deposit_usdc_ata: depoAta || "",
           deposit_usdc_owner: depoOwner,
 
+          // Caps / Limits
           presale_min_usdc,
           presale_max_usdc,
-          cap_per_wallet_usdc: toNum(cfg.cap_per_wallet_usdc, null),
+          cap_per_wallet_usdc: firstNum(cfg.cap_per_wallet_usdc, null),
 
+          // NFT Gate
           gate: {
             enabled: isTrue(cfg.nft_gate_enabled),
             collection: cfg.gate_collection || null,
@@ -61,23 +76,26 @@ export default {
             discount_bps: discBps
           },
 
+          // Early Claim Parameter
           early_claim: {
             enabled: isTrue(cfg.early_claim_enabled),
             flat_usdc: toNum(cfg.early_flat_usdc, 1),
             fee_dest_wallet: firstAddr(cfg.early_fee_usdc_ata, depoAta) || ""
           },
 
+          // Tokenomics / Sonstiges
           airdrop_bonus_bps: toNum(cfg.airdrop_bonus_bps, 600),
           supply_total: firstNum(cfg.supply_total, 3141592653),
-          // optionale dist_*_bps könnten hier ebenso aus KV kommen
+          ...dist,                            // dist_*_bps Felder aus KV
           creator_pubkey: cfg.creator_pubkey || null,
+
           updated_at: Date.now()
         });
       }
 
-      /* ---------- WALLET BRIEF ---------- */
+      /* ---------- WALLET BRIEF / BALANCES ---------- */
       if (req.method === "GET" && (p === "/api/token/wallet/brief" || p === "/api/token/wallet/balances")) {
-        const wallet = (url.searchParams.get("wallet") || "").trim();
+        const wallet = (new URL(req.url)).searchParams.get("wallet")?.trim() || "";
         if (!isAddr(wallet)) return J({ ok:false, error:"bad_wallet" }, 400);
 
         const cfg = await readCfg(env);
@@ -143,8 +161,8 @@ export default {
           wallet, amount_usdc: amount,
           expected_inpi, applied_price_usdc: price, gate_ok: gateOk,
           deposit_usdc_ata: depoAta, usdc_mint: USDC_MINT,
-          qr_contribute: contribute,     // USDC Beitrag
-          qr_claim_now: claimNow,        // 1 USDC Fee (Sofort-Claim)
+          qr_contribute: contribute,     // USDC Beitrag (SolanaPay + QR + Universal-Links)
+          qr_claim_now: claimNow,        // 1 USDC Early-Fee sofort zahlen
           airdrop_bonus_bps: toNum(cfg.airdrop_bonus_bps, 600),
           updated_at: Date.now()
         });
@@ -304,13 +322,21 @@ async function reconcileOne(req, env){
 /* --------- Config + Gate --------- */
 async function readCfg(env){
   const keys = [
+    // Basics
     "INPI_MINT","presale_state","tge_ts","public_rpc_url",
+    // Preise
     "presale_price_usdc","public_mint_price_usdc","public_price_usdc",
-    "presale_deposit_usdc","cap_per_wallet_usdc",
-    "presale_min_usdc","presale_max_usdc",
+    // Deposit / Caps
+    "presale_deposit_usdc","cap_per_wallet_usdc","presale_min_usdc","presale_max_usdc",
+    // Gate
     "nft_gate_enabled","gate_mint","gate_collection","gate_discount_bps",
+    // Tokenomics
     "airdrop_bonus_bps","supply_total",
+    "dist_presale_bps","dist_dex_liquidity_bps","dist_staking_bps","dist_ecosystem_bps",
+    "dist_treasury_bps","dist_team_bps","dist_airdrop_nft_bps","dist_buyback_reserve_bps",
+    // Early Claim
     "early_claim_enabled","early_fee_usdc_ata","early_flat_usdc",
+    // Meta
     "creator_pubkey"
   ];
   const out = {};
@@ -320,9 +346,22 @@ async function readCfg(env){
 function pickBasePrice(cfg){
   return firstNum(cfg.presale_price_usdc, cfg.public_mint_price_usdc, cfg.public_price_usdc);
 }
+function pickDists(cfg){
+  // Wenn Key existiert und numerisch ist → ausgeben, sonst gar nicht erst setzen
+  const fields = [
+    "dist_presale_bps","dist_dex_liquidity_bps","dist_staking_bps","dist_ecosystem_bps",
+    "dist_treasury_bps","dist_team_bps","dist_airdrop_nft_bps","dist_buyback_reserve_bps"
+  ];
+  const o = {};
+  for (const f of fields){
+    const n = numOrNull(cfg[f]);
+    if (n != null) o[f] = n;
+  }
+  return o;
+}
 async function gateOkForWallet(env, cfg, wallet){
-  if (!isTrue(cfg.nft_gate_enabled)) return true; // soft gate
-  // 1) gate_mint
+  if (!isTrue(cfg.nft_gate_enabled)) return true; // soft gate: ohne Gate = ok
+  // 1) konkreter gate_mint
   if (isAddr(cfg.gate_mint)) {
     try {
       const rpc = await getRpc(env);
@@ -334,7 +373,7 @@ async function gateOkForWallet(env, cfg, wallet){
       }
     } catch {}
   }
-  // 2) Sammlung (Helius-Extended RPC)
+  // 2) Collection via Helius (nur wenn API-Key + collection gesetzt)
   if (cfg.gate_collection && env.HELIUS_API_KEY) {
     try {
       const rpc = await getRpc(env);
@@ -477,11 +516,14 @@ function solanaPay({ to, amount, spl, label, msg }){
   if (msg) qp.set("message", msg);
   return `solana:${to}?${qp.toString()}`;
 }
+
+/* --------- Parse/Guard helpers --------- */
 function isAddr(s){ return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(s||"")); }
 function isSig(s){ return /^[1-9A-HJ-NP-Za-km-z]{43,88}$/.test(String(s||"")); }
 function firstAddr(...xs){ for (const x of xs){ if (isAddr(x)) return x; } return ""; }
 function firstNum(...xs){ for (const x of xs){ const n = Number(x); if (Number.isFinite(n)) return n; } return null; }
 function toNum(x, d=0){ const n = Number(x); return Number.isFinite(n)? n : d; }
+function numOrNull(x){ const n = Number(x); return Number.isFinite(n)? n : null; }
 function isTrue(x){ return String(x||"").toLowerCase()==="true"; }
 function round6(x){ return Math.round(Number(x||0)*1e6)/1e6; }
 function numFrom(amountStr, decimals){ const a=BigInt(amountStr||"0"); const d=Number(decimals||0); const den=10n**BigInt(d); return Number(a)/Number(den||1n); }
