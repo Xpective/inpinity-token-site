@@ -119,6 +119,15 @@ export default {
     if (req.method === "GET" && p === "/admin/health") {
       return J({ ok: true, now: Date.now() });
     }
+    if (req.method === "GET" && p === "/admin/env") {
+      return J({ ok: true, env: {
+        CONFIG_KEYS: env.CONFIG_KEYS || null,
+        IP_ALLOWLIST: env.IP_ALLOWLIST || "",
+        ADMIN_REALM: env.ADMIN_REALM || "",
+        has_ADMIN_USER: !!env.ADMIN_USER,
+        has_ADMIN_PASS: !!env.ADMIN_PASS
+      }});
+    }
 
     return new Response("Not found", { status: 404, headers: secHeaders() });
   }
