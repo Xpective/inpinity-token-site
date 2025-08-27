@@ -187,7 +187,6 @@ const STATE = {
 
 /* ---------- Preis/Erwartung ---------- */
 function currentPriceUSDC() {
-  // gate_ok => Tier "mit NFT", sonst "ohne NFT"
   return STATE.gate_ok ? STATE.price_with_nft_usdc : STATE.price_without_nft_usdc;
 }
 function calcExpectedInpi(usdc) {
@@ -418,6 +417,29 @@ function numOr(def, maybe){
   return Number.isFinite(n) ? n : def;
 }
 
+/* ---------- Wallet-Balances + Gate ---------- */
+async function refreshBalances(){
+  if (!pubkey) return;
+  try{
+    const url = `${CFG.API_BASE}/wallet/balances?wallet=${encodeURIComponent(pubkey.toBase58())}&t=${Date.now()}`;
+    const j = await fetch(url, { headers: { accept:"application/json" }}).then(r=>r.json());
+    const usdc = Number(j?.usdc?.uiAmount ?? NaN);
+    const inpi = Number(j?.inpi?.uiAmount ?? NaN);
+    if (usdcBal) usdcBal.textContent = fmt(usdc, 2);
+    if (inpiBal) inpiBal.textContent = fmt(inpi, 0);
+    STATE.gate_ok = !!j?.gate_ok;
+    updatePriceRow();
+    updateIntentAvailability();
+  }catch(e){
+    console.error(e);
+    if (usdcBal) usdcBal.textContent = "–";
+    if (inpiBal) inpiBal.textContent = "–";
+    STATE.gate_ok = false;
+    updatePriceRow();
+    updateIntentAvailability();
+  }
+}
+
 /* ---------- Claim-Status (claimbar) ---------- */
 async function refreshClaimStatus(){
   if (!pubkey) return;
@@ -565,3 +587,83 @@ if (btnPresaleIntent) {
   });
 }
 
+/* ---------- Early Claim ($1 USDC Fee) ---------- */
+async function startEarlyFlow(){
+  if (!pubkey) return alert("Bitte zuerst Wallet verbinden.");
+  if (!STATE.early.enabled) return alert("Early-Claim ist derzeit deaktiviert.");
+
+  try{
+    earlyArea?.classList?.remove("hidden");
+    if (earlyMsg) earlyMsg.textContent = "Erzeuge Solana Pay Link …";
+
+    const r = await fetch(`${CFG.API_BASE}/claim/early-intent`, {
+      method: "POST",
+      headers: { "content-type":"application/json", accept:"application/json" },
+      body: JSON.stringify({ wallet: pubkey.toBase58() })
+    });
+    const j = await r.json().catch(()=>null);
+    if (!r.ok || !j?.ok) throw new Error(j?.error || "Early-Intent fehlgeschlagen");
+
+    if (earlyQR) { earlyQR.src = j.qr_url; earlyQR.style.display = "block"; }
+    if (earlyMsg) earlyMsg.textContent = `Sende ${STATE.early.flat_usdc} USDC an die angezeigte Adresse (QR). Danach Signatur der Zahlung unten eintragen und bestätigen.`;
+  }catch(e){
+    console.error(e);
+    alert(e?.message || e);
+  }
+}
+
+async function confirmEarlyFee(){
+  if (!pubkey) return alert("Wallet verbinden.");
+  const sig = (earlySig?.value || "").trim();
+  if (!sig) return alert("Bitte die Transaktions-Signatur der 1-USDC-Zahlung eintragen.");
+
+  try{
+    if (earlyMsg) earlyMsg.textContent = "Prüfe Zahlung & queuing Claim …";
+    const r = await fetch(`${CFG.API_BASE}/claim/confirm`, {
+      method: "POST",
+      headers: { "content-type":"application/json", accept:"application/json" },
+      body: JSON.stringify({ wallet: pubkey.toBase58(), fee_signature: sig })
+    });
+    const j = await r.json().catch(()=>null);
+    if (!r.ok || !j?.ok) throw new Error(j?.error || "Confirm fehlgeschlagen");
+
+    if (earlyMsg) {
+      earlyMsg.textContent = `✅ Claim eingereiht (Job: ${j.job_id || "n/a"}). Du erhältst die INPI zeitnah.`;
+    }
+    await refreshClaimStatus();
+  }catch(e){
+    console.error(e);
+    alert(e?.message || e);
+    if (earlyMsg) earlyMsg.textContent = "Fehler bei der Bestätigung.";
+  }
+}
+
+/* ---------- Base58 (nur Encode) ---------- */
+const B58_ALPH = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function bs58Encode(bytes){
+  // bytes: Uint8Array
+  if (!bytes || !bytes.length) return "";
+  // Count leading zeros
+  let zeros = 0; while (zeros < bytes.length && bytes[zeros] === 0) zeros++;
+  // Convert to base58
+  let digits = [0];
+  for (let i = 0; i < bytes.length; i++){
+    let carry = bytes[i];
+    for (let j = 0; j < digits.length; j++){
+      const x = (digits[j] << 8) + carry;
+      digits[j] = Math.floor(x / 58);
+      carry = x % 58;
+    }
+    while (carry) { digits.push(carry % 58); carry = Math.floor(carry / 58); }
+    // Remove leading zeros in base58 representation
+    let k = 0; while (k < digits.length && digits[k] === 0) k++;
+    digits = digits.slice(k).concat(new Array(k).fill(0));
+  }
+  let out = "";
+  for (let i = 0; i < zeros; i++) out += "1";
+  for (let i = digits.length - 1; i >= 0; i--) out += B58_ALPH[digits[i] || 0];
+  return out;
+}
+
+/* ---------- Boot ---------- */
+window.addEventListener("DOMContentLoaded", () => { init().catch(console.error); });
