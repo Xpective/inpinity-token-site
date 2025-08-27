@@ -1,23 +1,21 @@
 /* ===========================================
    INPI Token API – Presale + Early Claim
-   KV Bindings: CONFIG, PRESALE, INPI_CLAIMS
+   KV: CONFIG, PRESALE, INPI_CLAIMS
    ENV (optional): RPC_URL, HELIUS_API_KEY, RECONCILE_KEY
    =========================================== */
 
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"; // offizielles USDC
 const QR_SVC    = "https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=";
 const DEPOSIT_USDC_ATA_FALLBACK = "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6";
-const TOKEN_2022_PID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"; // Fallback-Scan
+const TOKEN_2022_PID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
 export default {
   async fetch(req, env) {
     try {
       const url = new URL(req.url);
       const p = url.pathname;
-
       if (req.method === "OPTIONS") return noContent();
 
-      /* ---------- PING (Routing-Check) ---------- */
       if (req.method === "GET" && p === "/api/token/ping") {
         return J({ ok: true, service: "inpi-api", ts: Date.now() });
       }
@@ -27,15 +25,17 @@ export default {
         const cfg = await readCfg(env);
         const rpc = await getRpc(env);
 
-        // Deposit & Owner
         const depoAta   = firstAddr(cfg.presale_deposit_usdc, DEPOSIT_USDC_ATA_FALLBACK);
         const depoOwner = isAddr(depoAta) ? (await getAtaOwnerSafe(rpc, depoAta)) : null;
 
-        // Preisbasis + optionaler Gate-Rabatt
         const base = pickBasePrice(cfg);
         const discBps = toNum(cfg.gate_discount_bps, 1000); // 10% default
         const priceWithGate    = base != null ? round6(base * (1 - discBps / 10000)) : null;
         const priceWithoutGate = base;
+
+        // Caps (aus KV oder ENV-Vars)
+        const presale_min_usdc = firstNum(cfg.presale_min_usdc, env.PRESALE_MIN_USDC, null);
+        const presale_max_usdc = firstNum(cfg.presale_max_usdc, env.PRESALE_MAX_USDC, null);
 
         return J({
           rpc_url: rpc,
@@ -50,6 +50,8 @@ export default {
           deposit_usdc_ata: depoAta || "",
           deposit_usdc_owner: depoOwner,
 
+          presale_min_usdc,
+          presale_max_usdc,
           cap_per_wallet_usdc: toNum(cfg.cap_per_wallet_usdc, null),
 
           gate: {
@@ -62,10 +64,12 @@ export default {
           early_claim: {
             enabled: isTrue(cfg.early_claim_enabled),
             flat_usdc: toNum(cfg.early_flat_usdc, 1),
-            fee_dest_ata: firstAddr(cfg.early_fee_usdc_ata, depoAta) || ""
+            fee_dest_wallet: firstAddr(cfg.early_fee_usdc_ata, depoAta) || ""
           },
 
-          airdrop_bonus_bps: toNum(cfg.airdrop_bonus_bps, 600), // 6% default
+          airdrop_bonus_bps: toNum(cfg.airdrop_bonus_bps, 600),
+          supply_total: firstNum(cfg.supply_total, 3141592653),
+          // optionale dist_*_bps könnten hier ebenso aus KV kommen
           creator_pubkey: cfg.creator_pubkey || null,
           updated_at: Date.now()
         });
@@ -92,7 +96,7 @@ export default {
         return J({ ok:true, wallet, usdc, inpi, gate_ok: gateOk, applied_price_usdc: price, updated_at: Date.now() });
       }
 
-      /* ---------- PRESALE INTENT (liefert 2 QR-Links) ---------- */
+      /* ---------- PRESALE INTENT ---------- */
       if (req.method === "POST" && p === "/api/token/presale/intent") {
         if (!(await isJson(req))) return J({ ok:false, error:"bad_content_type" }, 415);
         const { wallet, amount_usdc } = await req.json().catch(()=>({}));
@@ -105,8 +109,10 @@ export default {
         const phase = String(cfg.presale_state || "pre");
         if (phase !== "pre" && phase !== "public") return J({ ok:false, error:"phase_closed", phase }, 403);
 
-        const cap = toNum(cfg.cap_per_wallet_usdc, null);
-        if (cap != null && amount > cap) return J({ ok:false, error:"over_cap", cap_per_wallet_usdc: cap }, 400);
+        const minCap = firstNum(cfg.presale_min_usdc, env.PRESALE_MIN_USDC, null);
+        const maxCap = firstNum(cfg.presale_max_usdc, env.PRESALE_MAX_USDC, null);
+        if (minCap != null && amount < minCap) return J({ ok:false, error:"under_min", presale_min_usdc: minCap }, 400);
+        if (maxCap != null && amount > maxCap) return J({ ok:false, error:"over_max", presale_max_usdc: maxCap }, 400);
 
         const depoAta = firstAddr(cfg.presale_deposit_usdc, DEPOSIT_USDC_ATA_FALLBACK);
         if (!isAddr(depoAta)) return J({ ok:false, error:"deposit_not_ready" }, 503);
@@ -118,18 +124,15 @@ export default {
         const price   = base == null ? null : round6(base * (gateOk ? (1 - discBps/10000) : 1));
         const expected_inpi = price ? Math.floor(amount / price) : null;
 
-        // QR #1: Beitrag (USDC → Deposit)
         const payUrl = solanaPay({ to: depoOwner || depoAta, amount, spl: USDC_MINT, label:"INPI Presale", msg:"INPI Presale Contribution" });
         const contribute = withWalletDeepLinks(payUrl);
 
-        // QR #2: Sofort-Claim Fee (1 USDC) an fee_ata (Fallback auf deposit)
         const feeAta = firstAddr(cfg.early_fee_usdc_ata, depoAta);
         const feeOwn = await getAtaOwnerSafe(rpc, feeAta);
         const feeAmt = toNum(cfg.early_flat_usdc, 1);
         const feeUrl = solanaPay({ to: feeOwn || feeAta, amount: feeAmt, spl: USDC_MINT, label:"INPI Early Claim Fee", msg:"INPI Early Claim Fee" });
         const claimNow = withWalletDeepLinks(feeUrl);
 
-        // Intent protokollieren
         const key = `intent:${Date.now()}:${wallet}`;
         await env.PRESALE.put(key, JSON.stringify({
           wallet, amount_usdc: amount, applied_price_usdc: price, gate_ok: gateOk, ts: Date.now()
@@ -147,7 +150,7 @@ export default {
         });
       }
 
-      /* ---------- EARLY CLAIM – nur QR erneut liefern ---------- */
+      /* ---------- EARLY CLAIM – QR ---------- */
       if (req.method === "POST" && p === "/api/token/claim/early-intent") {
         if (!(await isJson(req))) return J({ ok:false, error:"bad_content_type" }, 415);
         const { wallet } = await req.json().catch(()=>({}));
@@ -164,7 +167,7 @@ export default {
         return J({ ok:true, wallet, qr_url: `${QR_SVC}${encodeURIComponent(feeUrl)}`, solana_pay_url: feeUrl });
       }
 
-      /* ---------- CLAIM CONFIRM (nach 1 USDC Fee) ---------- */
+      /* ---------- CLAIM CONFIRM ---------- */
       if (req.method === "POST" && p === "/api/token/claim/confirm") {
         if (!(await isJson(req))) return J({ ok:false, error:"bad_content_type" }, 415);
         const { wallet, fee_signature } = await req.json().catch(()=>({}));
@@ -180,7 +183,6 @@ export default {
         const feeAta = firstAddr(cfg.early_fee_usdc_ata, cfg.presale_deposit_usdc, DEPOSIT_USDC_ATA_FALLBACK);
         if (!isAddr(feeAta)) return J({ ok:false, error:"fee_dest_not_ready" }, 503);
 
-        // prüfen: >= flat USDC vom wallet -> feeAta
         const feeAmt = toNum(cfg.early_flat_usdc, 1);
         const tx = await getTxSafe(rpc, fee_signature);
         if (!tx) return J({ ok:false, error:"tx_not_found" }, 404);
@@ -192,7 +194,6 @@ export default {
           return J({ ok:false, error:"fee_underpaid", need: feeAmt, ownerOut, destIn }, 400);
         }
 
-        // claimable berechnen
         const claim = await loadClaim(env, wallet);
         const gross = Math.floor((claim.total_inpi || 0) - (claim.early?.net_claimed || 0));
         if (gross <= 0) return J({ ok:false, error:"nothing_to_claim" }, 400);
@@ -271,7 +272,6 @@ async function reconcileOne(req, env){
   if (!tx) return J({ ok:false, error:"tx_not_found" }, 404);
 
   const pre = tx.meta?.preTokenBalances || [];
-  the:
   const post= tx.meta?.postTokenBalances || [];
   const ownerOut = ownerDeltaUSDC(pre, post, wallet);
   const depoIn   = accountDeltaUSDC(pre, post, depoAta);
@@ -279,9 +279,9 @@ async function reconcileOne(req, env){
   if (!(depoIn   > 0)) return J({ ok:false, error:"no_deposit_inflow" }, 400);
   if (Math.abs(ownerOut - depoIn) > 0.000001) return J({ ok:false, error:"mismatch_amounts", ownerOut, depoIn }, 400);
 
-  const price = toNum(override_inpi, null) ? null : pickBasePrice(cfg);
-  const inpi = toNum(override_inpi, null) ? Math.floor(Number(override_inpi))
-                                          : (price && price>0 ? Math.floor(ownerOut / price) : 0);
+  const price = firstNum(override_inpi, null) ? null : pickBasePrice(cfg);
+  const inpi = firstNum(override_inpi, null) ? Math.floor(Number(override_inpi))
+                                            : (price && price>0 ? Math.floor(ownerOut / price) : 0);
   if (!(inpi > 0)) return J({ ok:false, error:"price_not_set" }, 500);
 
   const claim = await loadClaim(env, wallet);
@@ -307,8 +307,9 @@ async function readCfg(env){
     "INPI_MINT","presale_state","tge_ts","public_rpc_url",
     "presale_price_usdc","public_mint_price_usdc","public_price_usdc",
     "presale_deposit_usdc","cap_per_wallet_usdc",
+    "presale_min_usdc","presale_max_usdc",
     "nft_gate_enabled","gate_mint","gate_collection","gate_discount_bps",
-    "airdrop_bonus_bps",
+    "airdrop_bonus_bps","supply_total",
     "early_claim_enabled","early_fee_usdc_ata","early_flat_usdc",
     "creator_pubkey"
   ];
@@ -327,13 +328,13 @@ async function gateOkForWallet(env, cfg, wallet){
       const rpc = await getRpc(env);
       const res = await rpcCall(rpc, "getTokenAccountsByOwner",
         [wallet, { mint: cfg.gate_mint }, { encoding:"jsonParsed", commitment:"confirmed" }]);
-      for (const it of res?.value || []) {
+      for (const it of (res?.value || [])) {
         const amt = it?.account?.data?.parsed?.info?.tokenAmount?.uiAmount || 0;
         if (amt > 0) return true;
       }
     } catch {}
   }
-  // 2) Sammlung (DAS/Helius)
+  // 2) Sammlung (Helius-Extended RPC)
   if (cfg.gate_collection && env.HELIUS_API_KEY) {
     try {
       const rpc = await getRpc(env);
@@ -408,15 +409,12 @@ async function getAtaOwnerSafe(rpc, ata){
   } catch { return null; }
 }
 async function getSplBalance(rpcUrl, owner, mint){
-  // 1) Standard nach Mint
   let res = await rpcCall(rpcUrl, "getTokenAccountsByOwner",
     [owner, { mint }, { encoding:"jsonParsed", commitment:"confirmed" }]).catch(()=>null);
 
-  // 2) Falls 0, noch einmal mit Token-2022 Programm filtern
   if (!res || (res.value||[]).length === 0) {
     res = await rpcCall(rpcUrl, "getTokenAccountsByOwner",
       [owner, { programId: TOKEN_2022_PID }, { encoding:"jsonParsed", commitment:"confirmed" }]).catch(()=>null);
-    // Filtere auf die Mint
     if (res && Array.isArray(res.value)) {
       res.value = res.value.filter(v => v?.account?.data?.parsed?.info?.mint === mint);
     }
