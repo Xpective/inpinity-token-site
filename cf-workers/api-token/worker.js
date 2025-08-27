@@ -1,17 +1,19 @@
 /* ===========================================
-   INPI Token API
+   INPI Token API (Allow-All Presale / Soft-Gate)
    Endpoints: /status, /deposit/balance, /wallet/balances,
               /presale/intent, /presale/reconcile-one,
               /claim/status, /claim/early/* (fee + bps)
    KV Bindings: CONFIG, PRESALE, INPI_CLAIMS
    Optional Vars: GATE_MINT, GATE_COLLECTION,
-                  PRESALE_MIN_USDC, PRESALE_MAX_USDC, RPC_URL
+                  PRESALE_MIN_USDC, PRESALE_MAX_USDC, RPC_URL, PRESALE_DEPOSIT_USDC
    Optional Secrets: HELIUS_API_KEY, RECONCILE_KEY
    =========================================== */
 
    const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC4wEGGkZwyTDt1v";
    const QR_SVC    = "https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=";
    const EARLY_FLAT_USDC = 1; // $1 Fee
+   // Sicherer Deposit-Fallback (spiegelt Frontend)
+   const DEPOSIT_USDC_ATA_FALLBACK = "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6";
    
    export default {
      async fetch(req, env) {
@@ -24,22 +26,26 @@
            return new Response(null, { status: 204, headers: corsHeaders() });
          }
    
-         // ---- STATUS (public)  — liefert alles was app.js braucht
+         // ---- STATUS (public) — liefert alles was app.js braucht
          if (req.method === "GET" && p === "/api/token/status") {
            const cfg     = await readPublicConfig(env);
            const rpc_url = await getPublicRpcUrl(env);
            const early   = await getEarlyConfig(env);
            const gate    = await getGateSetup(env);
    
-           // Deposit + Owner (für Solana Pay als "to" bevorzugt Owner)
-           const depoAta = cfg.presale_deposit_usdc || "";
+           // Deposit + Owner (Owner bevorzugen für Solana Pay)
+           const depoAta = firstAddress(
+             cfg.presale_deposit_usdc,
+             env.PRESALE_DEPOSIT_USDC,
+             DEPOSIT_USDC_ATA_FALLBACK
+           );
            let depoOwner = "";
            if (isAddress(depoAta)) {
              try { depoOwner = await getTokenAccountOwner(rpc_url, depoAta) || ""; } catch {}
            }
    
            // Early Fee Ziel (eigene ATA optional)
-           const feeAta = cfg.early_fee_usdc_ata || cfg.presale_deposit_usdc || "";
+           const feeAta = firstAddress(cfg.early_fee_usdc_ata, depoAta);
            let feeOwner = "";
            if (isAddress(feeAta)) {
              try { feeOwner = await getTokenAccountOwner(rpc_url, feeAta) || ""; } catch {}
@@ -81,7 +87,7 @@
              public_price_usdc:  toNumOrNull(cfg.public_price_usdc),
    
              // neue Tier-Preise
-             price_with_nft_usdc:  priceWith,
+             price_with_nft_usdc:   priceWith,
              price_without_nft_usdc: priceWithout,
    
              // Deposit
@@ -120,7 +126,7 @@
          // ---- DEPOSIT BALANCE (public)
          if (req.method === "GET" && p === "/api/token/deposit/balance") {
            const cfg  = await readPublicConfig(env);
-           const depo = cfg.presale_deposit_usdc || "";
+           const depo = firstAddress(cfg.presale_deposit_usdc, env.PRESALE_DEPOSIT_USDC, DEPOSIT_USDC_ATA_FALLBACK);
            if (!isAddress(depo)) return J({ ok:false, error:"deposit_not_ready" }, 503);
    
            const rpc = await getPublicRpcUrl(env);
@@ -146,7 +152,7 @@
              cfg.INPI_MINT ? getSplBalance(rpc, wallet, cfg.INPI_MINT) : Promise.resolve(null)
            ]);
    
-           // Gate prüfen (ENV > KV)
+           // Gate prüfen (ENV > KV) – nur Information/Preiswahl, KEIN Blocker
            const gate = await getGateSetup(env);
            let gate_ok = true;
            if (gate.enabled) {
@@ -156,7 +162,7 @@
            return J({ ok:true, wallet, usdc, inpi, gate_ok, updated_at:Date.now() });
          }
    
-         // ---- PRESALE INTENT (public)
+         // ---- PRESALE INTENT (public) — SOFT-GATE: niemals blocken
          if (req.method === "POST" && p === "/api/token/presale/intent") {
            if (!(await isJson(req))) return J({ ok:false, error:"bad_content_type" }, 415);
            const body   = await req.json().catch(() => ({}));
@@ -180,18 +186,17 @@
            const cap = toNumOrNull(cfg.cap_per_wallet_usdc);
            if (cap != null && amount > cap) return J({ ok:false, error:"over_cap", cap_per_wallet_usdc: cap }, 400);
    
-           const depoAta = cfg.presale_deposit_usdc || "";
+           const depoAta = firstAddress(cfg.presale_deposit_usdc, env.PRESALE_DEPOSIT_USDC, DEPOSIT_USDC_ATA_FALLBACK);
            if (!isAddress(depoAta)) return J({ ok:false, error:"deposit_not_ready" }, 503);
    
-           // Gate erzwingen wenn aktiv
+           // GATE → nur für Preiswahl; niemals blockieren
            const gate = await getGateSetup(env);
            let gateOk = true;
            if (gate.enabled) {
              gateOk = await passesAnyGate(env, wallet, gate.collection, gate.mint);
-             if (!gateOk) return J({ ok:false, error:"gate_denied" }, 403);
            }
    
-           // Effektiven Preis je nach Gate wählen
+           // Effektiver Preis je nach (evtl.) Gate
            const appliedPrice = pickEffectivePrice(cfg, gateOk);
            const expected_inpi = appliedPrice ? Math.floor(amount / appliedPrice) : null;
    
@@ -307,15 +312,15 @@
            if (!early.enabled) return J({ ok:false, error:"early_disabled" }, 403);
    
            const cfg = await readPublicConfig(env);
-           const destAta = cfg.early_fee_usdc_ata || cfg.presale_deposit_usdc || "";
-           if (!isAddress(destAta)) return J({ ok:false, error:"fee_dest_not_ready" }, 503);
+           const srcDepo = firstAddress(cfg.early_fee_usdc_ata, cfg.presale_deposit_usdc, env.PRESALE_DEPOSIT_USDC, DEPOSIT_USDC_ATA_FALLBACK);
+           if (!isAddress(srcDepo)) return J({ ok:false, error:"fee_dest_not_ready" }, 503);
    
            const rpc = await getPublicRpcUrl(env);
-           let destOwner = await getTokenAccountOwner(rpc, destAta).catch(()=>null);
+           let destOwner = await getTokenAccountOwner(rpc, srcDepo).catch(()=>null);
            if (!isAddress(destOwner)) destOwner = null;
    
            const sp = makeSolanaPayUrl({
-             to: destOwner || destAta,
+             to: destOwner || srcDepo,
              amount: EARLY_FLAT_USDC, splToken: USDC_MINT,
              label: "INPI Early Claim Fee", message: "INPI Early Claim Fee"
            });
@@ -323,7 +328,7 @@
            const solflare = `https://solflare.com/ul/v1/solana-pay?link=${encodeURIComponent(sp)}`;
            const qr_url   = `${QR_SVC}${encodeURIComponent(sp)}`;
    
-           return J({ ok:true, wallet, dest_wallet: destOwner || destAta, amount_usdc: EARLY_FLAT_USDC,
+           return J({ ok:true, wallet, dest_wallet: destOwner || srcDepo, amount_usdc: EARLY_FLAT_USDC,
              solana_pay_url: sp, phantom_universal_url: phantom, solflare_universal_url: solflare, qr_url });
          }
    
@@ -344,7 +349,7 @@
            }
    
            const cfg = await readPublicConfig(env);
-           const destAta = cfg.early_fee_usdc_ata || cfg.presale_deposit_usdc || "";
+           const destAta = firstAddress(cfg.early_fee_usdc_ata, cfg.presale_deposit_usdc, env.PRESALE_DEPOSIT_USDC, DEPOSIT_USDC_ATA_FALLBACK);
            if (!isAddress(destAta)) return J({ ok:false, error:"fee_dest_not_ready" }, 503);
    
            // Tx prüfen: >= $1 USDC vom wallet -> dest ATA
@@ -518,8 +523,8 @@
      if (!/^[1-9A-HJ-NP-Za-km-z]{43,88}$/.test(signature)) return J({ ok:false, error:"bad_signature" }, 400);
    
      const cfg = await readPublicConfig(env);
-     const depo = cfg.presale_deposit_usdc || "";
-     if (!isAddress(depo)) return J({ ok:false, error:"deposit_not_ready" }, 503);
+     const depoCfg = firstAddress(cfg.presale_deposit_usdc, env.PRESALE_DEPOSIT_USDC, DEPOSIT_USDC_ATA_FALLBACK);
+     if (!isAddress(depoCfg)) return J({ ok:false, error:"deposit_not_ready" }, 503);
    
      const rpc = await getPublicRpcUrl(env);
      const tx = await rpcCall(rpc, "getTransaction", [
@@ -538,7 +543,7 @@
      const ownerDelta = ownerDeltaUSDC(pre, post, wallet);
      if (!(ownerDelta > 0)) return J({ ok:false, error:"no_owner_outflow" }, 400);
    
-     const depoDelta = accountDeltaUSDC(pre, post, depo);
+     const depoDelta = accountDeltaUSDC(pre, post, depoCfg);
      if (!(depoDelta > 0)) return J({ ok:false, error:"no_deposit_inflow" }, 400);
    
      if (Math.abs(depoDelta - ownerDelta) > 0.000001) {
@@ -551,7 +556,11 @@
      if (overrideInpi != null && overrideInpi > 0) {
        inpi = Math.floor(overrideInpi);
      } else {
-       const price = toNumOrNull(cfg.presale_price_usdc);
+       // Standard: Presale-Preis (oder Fallback public_mint/presale)
+       const price =
+         toNumOrNull(cfg.presale_price_usdc) ??
+         toNumOrNull(cfg.public_mint_price_usdc) ??
+         toNumOrNull(cfg.tier_nft_price_usdc);
        if (!(price > 0)) return J({ ok:false, error:"price_not_set" }, 500);
        inpi = Math.floor(usdc / price);
      }
@@ -878,6 +887,10 @@
      const den = 10n ** BigInt(d);
      return Number(a) / Number(den);
    }
+   function firstAddress(...cands){
+     for (const c of cands) { if (isAddress(c)) return c; }
+     return "";
+   }
    
    /* ---------- Preiswahl: mit/ohne NFT ---------- */
    function pickEffectivePrice(cfg, gateOk) {
@@ -891,6 +904,7 @@
        toNumOrNull(cfg.public_price_usdc) ??
        null;
    
+     // Soft-Gate: Wenn kein public Preis existiert, fallback auf withNft
      return gateOk ? withNft : (withoutNft ?? withNft);
    }
    
