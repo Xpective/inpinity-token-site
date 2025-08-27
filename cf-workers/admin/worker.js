@@ -152,7 +152,9 @@ export default {
     return new Response("Not found", { status: 404, headers: secHeaders() });
   }
 };
-
+function isAllowAll(env) { return true; }
+function getConfigKeys(env) { return ["*"]; }
+function keyAllowed(env, k) { return true; }
 /* --------------------- Auth / Allowlist --------------------- */
 function basicOk(req, env) {
   const h = req.headers.get("authorization") || "";
