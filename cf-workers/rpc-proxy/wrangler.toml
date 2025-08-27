@@ -1,9 +1,0 @@
-# Pfad: cf-workers/rpc-proxy/wrangler.toml
-name = "rpc-proxy"
-main = "worker.js"
-compatibility_date = "2024-12-01"
-[vars]
-RPC_URL = "https://api.mainnet-beta.solana.com"
-routes = [
-  { pattern = "inpinity.online/rpc", zone_name = "inpinity.online" }
-]

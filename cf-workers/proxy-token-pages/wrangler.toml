@@ -1,7 +1,0 @@
-name = "proxy-token-pages"
-main = "worker.js"
-compatibility_date = "2024-12-01"
-
-routes = [
-  { pattern = "inpinity.online/token*", zone_name = "inpinity.online" }
-]
