@@ -1,10 +1,11 @@
-// INPI Admin Worker (Basic + optional TOTP, Cron-Proxies, Config-API) – Allow-All ready
+// INPI Admin Worker (Basic + optional TOTP, Cron-Proxies, Config-API) – Whitelist OFF
 // Bindings/Secrets:
 // - KV: CONFIG (required), OPS (optional für Audit)
 // - Secrets: ADMIN_USER, ADMIN_PASS
 // - Optional Secrets: ADMIN_TOTP_SECRET, ADMIN_TOTP_PERIOD, ADMIN_TOTP_WINDOW
 // - ENV/Secret: CRON_BASE (z.B. https://inpinity.online/cron), OPS_API_KEY, OPS_HMAC_ALGO
-// - Optional: IP_ALLOWLIST (CSV), CONFIG_KEYS (CSV Whitelist), CONFIG_ALLOW_ALL ("true"/"false")
+// - Optional: IP_ALLOWLIST (CSV)
+//   >> Whitelist ist in diesem Build HARD-OFF: CONFIG_KEYS/CONFIG_ALLOW_ALL werden ignoriert.
 
 export default {
   async fetch(req, env) {
@@ -23,7 +24,7 @@ export default {
     const url = new URL(req.url);
     const p = url.pathname;
 
-    // OTP für sensible Routen (Config & Cron-Proxies)
+    // OTP nur, wenn Secret gesetzt ist
     const mustOtp = needsOtp(p);
     if (mustOtp && env.ADMIN_TOTP_SECRET) {
       const otp = getOtpFromReq(req);
@@ -36,19 +37,15 @@ export default {
       if (!ok) return J({ ok: false, error: "bad_otp" }, 401, { "x-require-otp": "1" });
     }
 
-    // UI
+    // Mini UI
     if (req.method === "GET" && (p === "/admin" || p === "/admin/")) return ui(env);
 
-    // -------- CONFIG API --------
+    // ------------- CONFIG API -------------
 
-    // Liste erlaubter Keys (oder alle Keys bei Allow-All)
+    // Keys (immer alle – Whitelist OFF)
     if (req.method === "GET" && p === "/admin/config/keys") {
-      const wl = getConfigKeys(env);
-      if (wl[0] === "*") {
-        const all = await listAllConfigKeys(env, { cap: 2000 });
-        return J({ ok: true, allow_all: true, keys: all });
-      }
-      return J({ ok: true, allow_all: false, keys: wl });
+      const all = await listAllConfigKeys(env, { cap: 5000 });
+      return J({ ok: true, allow_all: true, keys: all });
     }
 
     // Dump/Read
@@ -56,62 +53,50 @@ export default {
       const qKey = url.searchParams.get("key");
       if (qKey) {
         const v = await env.CONFIG.get(qKey);
-        return J({ ok: true, allow_all: isAllowAll(env), key: qKey, value: v });
+        return J({ ok: true, allow_all: true, key: qKey, value: v });
       }
-      let keys = getConfigKeys(env);
-      const allowAll = keys[0] === "*";
-      if (allowAll) keys = await listAllConfigKeys(env, { cap: 2000 });
-
+      const keys = await listAllConfigKeys(env, { cap: 5000 });
       const out = {};
       await Promise.all(keys.map(async (k) => (out[k] = await env.CONFIG.get(k))));
-      return J({ ok: true, allow_all: allowAll, keys, values: out });
+      return J({ ok: true, allow_all: true, keys, values: out });
     }
 
-    // Set
+    // Set (immer erlaubt)
     if (req.method === "POST" && p === "/admin/config/set") {
       if (!(await requireJson(req))) return badCT();
       const { key, value } = await req.json().catch(() => ({}));
-      if (!keyAllowed(env, key)) return J({ ok: false, error: "key_not_allowed" }, 403);
+      if (!key) return J({ ok: false, error: "key_required" }, 400);
       await env.CONFIG.put(String(key), String(value ?? ""));
       await audit(env, "config_set", { key });
       return J({ ok: true });
     }
 
-    // Setmany
+    // Setmany (immer erlaubt)
     if (req.method === "POST" && p === "/admin/config/setmany") {
       if (!(await requireJson(req))) return badCT();
       const { entries } = await req.json().catch(() => ({}));
       if (!entries || typeof entries !== "object") return J({ ok: false, error: "entries_object_required" }, 400);
-
-      if (!isAllowAll(env)) {
-        for (const [k] of Object.entries(entries)) {
-          if (!keyAllowed(env, k)) return J({ ok: false, error: `key_not_allowed:${k}` }, 403);
-        }
-      }
       await Promise.all(Object.entries(entries).map(([k, v]) => env.CONFIG.put(String(k), String(v ?? ""))));
       await audit(env, "config_setmany", { count: Object.keys(entries).length });
       return J({ ok: true });
     }
 
-    // Delete
+    // Delete (immer erlaubt)
     if (req.method === "POST" && p === "/admin/config/delete") {
       if (!(await requireJson(req))) return badCT();
       const { key } = await req.json().catch(() => ({}));
-      if (!keyAllowed(env, key)) return J({ ok: false, error: "key_not_allowed" }, 403);
-      await env.CONFIG.delete(key);
+      if (!key) return J({ ok: false, error: "key_required" }, 400);
+      await env.CONFIG.delete(String(key));
       await audit(env, "config_delete", { key });
       return J({ ok: true });
     }
 
-    // Export
+    // Export (alle Keys)
     if (req.method === "GET" && p === "/admin/config/export") {
-      let keys = getConfigKeys(env);
-      const allowAll = keys[0] === "*";
-      if (allowAll) keys = await listAllConfigKeys(env, { cap: 5000 });
-
+      const keys = await listAllConfigKeys(env, { cap: 5000 });
       const out = {};
       await Promise.all(keys.map(async (k) => (out[k] = await env.CONFIG.get(k))));
-      return new Response(JSON.stringify({ ts: Date.now(), allow_all: allowAll, values: out }, null, 2), {
+      return new Response(JSON.stringify({ ts: Date.now(), allow_all: true, values: out }, null, 2), {
         headers: {
           "content-type": "application/json",
           "content-disposition": "attachment; filename=inpi-config-export.json",
@@ -120,27 +105,14 @@ export default {
       });
     }
 
-    // Import
+    // Import (alles schreiben)
     if (req.method === "POST" && p === "/admin/config/import") {
       if (!(await requireJson(req))) return badCT();
       const { values } = await req.json().catch(() => ({}));
       if (!values || typeof values !== "object") return J({ ok: false, error: "values_object_required" }, 400);
-
-      const wl = getConfigKeys(env);
-      const allowAll = wl[0] === "*";
-      const write = {};
-
-      if (allowAll) {
-        // alles durchlassen
-        for (const [k, v] of Object.entries(values)) write[k] = v;
-      } else {
-        // nur Whitelist
-        for (const [k, v] of Object.entries(values)) if (wl.includes(k)) write[k] = v;
-      }
-
-      await Promise.all(Object.entries(write).map(([k, v]) => env.CONFIG.put(String(k), String(v ?? ""))));
-      await audit(env, "config_import", { count: Object.keys(write).length, allow_all: allowAll });
-      return J({ ok: true, allow_all: allowAll, written: Object.keys(write).length });
+      await Promise.all(Object.entries(values).map(([k, v]) => env.CONFIG.put(String(k), String(v ?? ""))));
+      await audit(env, "config_import", { count: Object.keys(values).length, allow_all: true });
+      return J({ ok: true, allow_all: true, written: Object.keys(values).length });
     }
 
     // -------- CRON PROXIES (mit Bearer + HMAC) --------
@@ -148,21 +120,18 @@ export default {
       const r = await proxyCron(env, "/status", "GET", null);
       return pass(r);
     }
-
     if (req.method === "POST" && p === "/admin/cron/reconcile") {
       if (!(await requireJson(req))) return badCT();
       const body = await req.json().catch(() => ({}));
       const r = await proxyCron(env, "/reconcile-presale", "POST", body);
       return pass(r);
     }
-
     if (req.method === "POST" && p === "/admin/cron/early-claims") {
       if (!(await requireJson(req))) return badCT();
       const body = await req.json().catch(() => ({}));
       const r = await proxyCron(env, "/early-claims", "POST", body);
       return pass(r);
     }
-
     if (req.method === "GET" && p === "/admin/ops/peek") {
       const q = url.searchParams.toString();
       const r = await proxyCron(env, `/ops/peek${q ? "?" + q : ""}`, "GET", null);
@@ -170,7 +139,7 @@ export default {
     }
 
     // Health
-    if (req.method === "GET" && p === "/admin/health") return J({ ok: true, now: Date.now(), allow_all: isAllowAll(env) });
+    if (req.method === "GET" && p === "/admin/health") return J({ ok: true, now: Date.now(), allow_all: true });
 
     return new Response("Not found", { status: 404, headers: secHeaders() });
   }
@@ -194,126 +163,7 @@ function needsOtp(path) {
   return path.startsWith("/admin/config") || path.startsWith("/admin/cron") || path.startsWith("/admin/ops");
 }
 
-/* --------------------- Config Keys --------------------- */
-/* Falls ENV.CONFIG_KEYS nicht gesetzt ist, verwenden wir eine
-   umfangreiche Default-Whitelist (bestehende Keys + neue Keys). */
-const DEFAULT_KEYS = [
-  // Core / Phasen / Preise / Wallets / RPC
-  "INPI_MINT",
-  "presale_state",
-  "tge_ts",
-  "presale_price_usdc",
-  "public_price_usdc",
-  "public_mint_price_usdc",
-  "presale_target_usdc",
-  "cap_per_wallet_usdc",
-  "presale_deposit_usdc",
-  "cap_per_wallet_usdc",
-  "presale_deposit_usdc" 
-  "presale_min_usdc",
-  "presale_max_usdc",
-  "public_rpc_url",
-
-  // Gate (KV & ENV-Fallbacks)
-  "nft_gate_enabled",
-  "gate_collection",
-  "nft_gate_collection",
-  "gate_mint",
-
-  // Preis-Tiers
-  "tier_nft_price_usdc",
-  "tier_public_price_usdc",
-
-  // Public Mint & Fees
-  "public_mint_enabled",
-  "public_mint_fee_bps",
-  "public_mint_fee_dest",
-
-  // Quoten / Overflow
-  "sale_nft_quota_bps",
-  "sale_public_quota_bps",
-  "sale_overflow_action",
-
-  // LP
-  "lp_split_bps",
-  "lp_bucket_usdc",
-  "lp_lock_initial_days",
-  "lp_lock_rolling_days",
-
-  // Staking
-  "staking_total_inpi",
-  "staking_fee_bps",
-  "staking_start_ts",
-  "staking_end_ts",
-
-  // Buyback / Circuit Breaker / Floor
-  "buyback_enabled",
-  "buyback_min_usdc",
-  "buyback_twap_slices",
-  "buyback_cooldown_min",
-  "buyback_split_burn_bps",
-  "buyback_split_lp_bps",
-  "cb_enabled",
-  "cb_drop_pct_1h",
-  "cb_vol_mult",
-  "cb_cooldown_min",
-  "floor_enabled",
-  "floor_min_usdc_per_inpi",
-  "floor_window_min",
-  "floor_daily_cap_usdc",
-
-  // Early-Claim + Bonus + separater Fee-ATA
-  "early_claim_enabled",
-  "early_claim_fee_bps",
-  "early_claim_fee_dest",
-  "wait_bonus_bps",
-  "early_fee_usdc_ata",
-
-  // Creator Streams
-  "creator_usdc_stream_monthly_usdc",
-  "creator_usdc_stream_months",
-  "creator_usdc_stream_next_ts",
-  "creator_inpi_stream_bps_per_month",
-  "creator_inpi_stream_months",
-  "creator_inpi_stream_next_ts",
-
-  // Distribution / Meta
-  "supply_total",
-  "governance_multisig",
-  "timelock_seconds",
-  "project_uri",
-  "whitepaper_sha256",
-  "twap_enabled",
-  "dist_presale_bps",
-  "dist_dex_liquidity_bps",
-  "dist_staking_bps",
-  "dist_ecosystem_bps",
-  "dist_treasury_bps",
-  "dist_team_bps",
-  "dist_airdrop_nft_bps",
-  "dist_buyback_reserve_bps"
-];
-
-// Allow-All Umschalter
-function isAllowAll(env) {
-  const yes = String(env.CONFIG_ALLOW_ALL || "").toLowerCase() === "true";
-  const star = (env.CONFIG_KEYS || "").trim() === "*";
-  return yes || star;
-}
-function getConfigKeys(env) {
-  const csv = (env.CONFIG_KEYS || "").trim();
-  const allowAll = isAllowAll(env);
-  if (allowAll || csv === "*") return ["*"]; // Allow-All Modus
-  if (!csv) return DEFAULT_KEYS;
-  return csv.split(",").map((s) => s.trim()).filter(Boolean);
-}
-function keyAllowed(env, k) {
-  const keys = getConfigKeys(env);
-  if (keys.length && keys[0] === "*") return true; // Allow-All -> alles erlaubt
-  return keys.includes(String(k));
-}
-
-// Alle Keys aus KV listen (für Allow-All)
+/* --------------------- Key-Liste (nur für UI/Dumps) --------------------- */
 async function listAllConfigKeys(env, { prefix = "", cap = 1000 } = {}) {
   let cursor = undefined;
   const found = [];
@@ -474,7 +324,7 @@ input[type="number"]{ width:120px }
   <section class="card">
     <div style="display:flex;align-items:baseline;gap:.6rem">
       <h2 style="margin:0">Config bearbeiten</h2>
-      <small id="wlState" class="muted"></small>
+      <small id="wlState" class="muted">Whitelist: OFF</small>
     </div>
     <div class="grid">
       <label>Key</label>
@@ -490,11 +340,6 @@ input[type="number"]{ width:120px }
         <button id="btnDel" class="secondary">Delete</button>
       </div>
     </div>
-    <p class="muted" style="margin-top:.6rem">
-      Hinweis: Für dein NFT-Gate ist <b>gate_collection</b> = <code>6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ</code> korrekt.
-      <br/>Child-NFTs (einzelne Asset/Mint IDs) sind ebenfalls zulässig (mehrere via Komma).
-      <br/>Early-Claim: <code>early_claim_enabled = true</code>. Separater Fee-ATA: <code>early_fee_usdc_ata</code>.
-    </p>
   </section>
 
   <section class="card">
@@ -504,43 +349,7 @@ input[type="number"]{ width:120px }
       <input type="file" id="file" accept="application/json"/>
       <button id="btnImport" class="secondary">Import</button>
     </div>
-    <p class="muted">Bei Allow-All werden <b>alle</b> Keys exportiert/importiert; sonst nur Whitelist.</p>
-  </section>
-
-  <section class="card">
-    <h2>Cron & Ops</h2>
-    <div class="row">
-      <button id="btnCronStatus">Cron Status</button>
-    </div>
-    <hr/>
-    <div>
-      <h3>Presale Reconcile</h3>
-      <div class="row">
-        <input id="recWallet" placeholder="optional wallet"/>
-        <input id="recSince" type="number" placeholder="since_slot (optional)"/>
-        <input id="recLimit" type="number" placeholder="limit (optional)"/>
-        <button id="btnReconcile">Run</button>
-      </div>
-    </div>
-    <hr/>
-    <div>
-      <h3>Early-Claims</h3>
-      <div class="row">
-        <input id="ecLimit" type="number" placeholder="limit (optional)"/>
-        <label><input type="checkbox" id="ecDry"/> dry_run</label>
-        <button id="btnEarlyClaims">Run</button>
-      </div>
-    </div>
-    <hr/>
-    <div>
-      <h3>OPS Peek</h3>
-      <div class="row">
-        <input id="opsPrefix" placeholder="prefix z.B. early_job:"/>
-        <input id="opsLimit" type="number" placeholder="limit"/>
-        <button id="btnOpsPeek">Peek</button>
-      </div>
-    </div>
-    <pre id="cronOut" class="small"></pre>
+    <p class="muted">Immer ALLE Keys.</p>
   </section>
 
   <section class="card">
@@ -558,100 +367,48 @@ input[type="number"]{ width:120px }
   </section>
 </main>
 <script>
-const OTP_KEY = "inpi_admin_otp";
-function getOtp(){ return document.getElementById('otp').value.trim(); }
-function setOtp(v){ document.getElementById('otp').value = v || ""; }
-document.getElementById('saveOtp').onclick = ()=>{ localStorage.setItem(OTP_KEY, getOtp()); alert('OTP gespeichert'); };
-setOtp(localStorage.getItem(OTP_KEY) || "");
-
 async function jfetch(url, opt={}){
-  const otp = getOtp();
-  opt.headers = opt.headers || {};
-  if (otp) opt.headers['x-otp'] = otp;
   const r = await fetch(url, opt);
   const t = await r.text();
   let j=null; try { j = JSON.parse(t); } catch {}
   return { ok:r.ok, status:r.status, j, raw:t, r };
 }
-
 async function loadKeys(){
   const { j } = await jfetch('/admin/config/keys');
   const sel = document.getElementById('key');
-  const wlState = document.getElementById('wlState');
   sel.innerHTML='';
   (j?.keys||[]).forEach(k=>{ const o=document.createElement('option'); o.value=k; o.textContent=k; sel.appendChild(o); });
-  wlState.textContent = j?.allow_all ? 'Whitelist: OFF (Allow-All aktiv)' : 'Whitelist: ON';
 }
 async function loadDump(){
   const { j } = await jfetch('/admin/config');
-  const dump = document.getElementById('dump');
-  dump.textContent = JSON.stringify(j?.values||{}, null, 2);
+  document.getElementById('dump').textContent = JSON.stringify(j?.values||{}, null, 2);
 }
-document.getElementById('btnSet').onclick = async()=>{
+document.getElementById('btnSet')?.addEventListener('click', async()=>{
   const key = document.getElementById('key').value;
   const value = document.getElementById('val').value;
   const { j:res } = await jfetch('/admin/config/set', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ key, value }) });
-  alert(JSON.stringify(res));
-  loadDump();
-};
-document.getElementById('btnDel').onclick = async()=>{
+  alert(JSON.stringify(res)); loadDump();
+});
+document.getElementById('btnDel')?.addEventListener('click', async()=>{
   const key = document.getElementById('key').value;
   const { j:res } = await jfetch('/admin/config/delete', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ key }) });
-  alert(JSON.stringify(res));
-  loadDump();
-};
-document.getElementById('btnExport').onclick = async()=>{
+  alert(JSON.stringify(res)); loadDump();
+});
+document.getElementById('btnExport')?.addEventListener('click', async()=>{
   const { r } = await jfetch('/admin/config/export');
   const b = await r.blob(); const a=document.createElement('a'); a.href= URL.createObjectURL(b); a.download='inpi-config-export.json'; a.click();
-};
-document.getElementById('btnImport').onclick = async()=>{
+});
+document.getElementById('btnImport')?.addEventListener('click', async()=>{
   const f = document.getElementById('file').files[0]; if(!f) return alert('JSON wählen');
   const txt = await f.text(); const { j:res } = await jfetch('/admin/config/import', { method:'POST', headers:{'content-type':'application/json'}, body: txt });
   alert(JSON.stringify(res)); loadDump();
-};
-
-/* Cron & Ops */
-document.getElementById('btnCronStatus').onclick = async()=>{
-  const r = await jfetch('/admin/cron/status');
-  document.getElementById('cronOut').textContent = r.raw;
-};
-document.getElementById('btnReconcile').onclick = async()=>{
-  const wallet = document.getElementById('recWallet').value.trim();
-  const since = Number(document.getElementById('recSince').value||'');
-  const limit = Number(document.getElementById('recLimit').value||'');
-  const body = {};
-  if (wallet) body.only_wallet = wallet;
-  if (Number.isFinite(since) && since>0) body.since_slot = since;
-  if (Number.isFinite(limit) && limit>0) body.limit = limit;
-  const r = await jfetch('/admin/cron/reconcile', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) });
-  document.getElementById('cronOut').textContent = r.raw;
-};
-document.getElementById('btnEarlyClaims').onclick = async()=>{
-  const limit = Number(document.getElementById('ecLimit').value||'');
-  const dry = document.getElementById('ecDry').checked;
-  const body = {};
-  if (Number.isFinite(limit) && limit>0) body.limit = limit;
-  if (dry) body.dry_run = true;
-  const r = await jfetch('/admin/cron/early-claims', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) });
-  document.getElementById('cronOut').textContent = r.raw;
-};
-document.getElementById('btnOpsPeek').onclick = async()=>{
-  const prefix = encodeURIComponent(document.getElementById('opsPrefix').value||'');
-  const l = encodeURIComponent(document.getElementById('opsLimit').value||'');
-  const qs = new URLSearchParams(); if (prefix) qs.set('prefix', decodeURIComponent(prefix)); if (l) qs.set('limit', decodeURIComponent(l));
-  const r = await jfetch('/admin/ops/peek' + (qs.toString() ? ('?' + qs.toString()) : ''));
-  document.getElementById('cronOut').textContent = r.raw;
-};
-
-/* Gate Check */
-document.getElementById('btnGateCheck').onclick = async ()=>{
+});
+document.getElementById('btnGateCheck')?.addEventListener('click', async ()=>{
   const w = document.getElementById('chkWallet').value.trim();
   if(!w) return alert('Wallet eingeben');
   const r = await fetch('/api/token/wallet/balances?wallet=' + encodeURIComponent(w));
-  const t = await r.text();
-  document.getElementById('gateOut').textContent = t;
-};
-
+  document.getElementById('gateOut').textContent = await r.text();
+});
 loadKeys().then(loadDump);
 </script>`;
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", ...secHeaders() }});
