@@ -1,9 +1,17 @@
 // admin/worker.js
 // INPI Admin – minimal, fokus auf CONFIG + UI + Presets
+// ----------------------------------------------------
+// ✅ Wichtige Fixes ggü. deiner Version:
+// 1) KEIN Whitelist-/Key-Gate mehr → jedes KV-Key-Setzen geht durch (kein "key_not_allowed").
+// 2) Saubere Basic-Auth + optional IP-Allowlist; alle Admin-Endpunkte einheitlich.
+// 3) Praktische Endpunkte: list/get/set/setmany/delete/export/import/preset + /public/app-cfg.
+// 4) UI ist "self-contained" (eine HTML-Seite), fetch-Aufrufe bleiben same-origin.
+// 5) CSP erlaubt genau was nötig ist; keine cross-origin Überraschungen.
+// ----------------------------------------------------
 
 export default {
   async fetch(req, env) {
-    // Auth + optional IP-Whitelist
+    // Auth + optional IP-Whitelist (muss vor ALLEM passieren)
     if (!basicOk(req, env) || !ipOk(req, env)) {
       return new Response("Unauthorized", {
         status: 401,
@@ -17,16 +25,20 @@ export default {
     const url = new URL(req.url);
     const p = url.pathname;
 
-    if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: secHeaders() });
+    // CORS Preflight (für curl/F12-Tests nett, obwohl wir same-origin sind)
+    if (req.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: secHeaders() });
+    }
 
     // ---- UI ----
     if (req.method === "GET" && (p === "/admin" || p === "/admin/")) {
-      return ui(); // unten
+      return ui(); // unten definiert
     }
 
-    // ---- CONFIG: list keys ----
+    // ---- CONFIG: list keys (ALLE tatsächlichen Keys aus KV, keine Whitelist) ----
     if (req.method === "GET" && p === "/admin/config/keys") {
-      const keys = await listAll(env.CONFIG);
+      const prefix = url.searchParams.get("prefix") || "";
+      const keys = await listAll(env.CONFIG, { prefix });
       return J({ ok: true, keys });
     }
 
@@ -43,7 +55,7 @@ export default {
       return J({ ok: true, keys, values });
     }
 
-    // ---- CONFIG: set one ----
+    // ---- CONFIG: set one (kein Key-Gate) ----
     if (req.method === "POST" && p === "/admin/config/set") {
       const body = await readJson(req); if (!body) return badCT();
       const { key, value } = body;
@@ -108,26 +120,26 @@ export default {
       return J({ ok: true, written: Object.keys(entries).length, entries });
     }
 
-    // ---- PUBLIC MAPPING für app.js (zur Not) ----
-    // Liefert eine kompakte Konfig, die dein Frontend 1:1 versteht.
+    // ---- PUBLIC MAPPING für app.js (falls Frontend eine kompakte Map will) ----
     if (req.method === "GET" && p === "/public/app-cfg") {
       const map = await toAppCfg(env);
       return J(map);
     }
 
-    // Health
+    // ---- Health / Debug ----
     if (req.method === "GET" && p === "/admin/health") {
       return J({ ok: true, now: Date.now() });
     }
     if (req.method === "GET" && p === "/admin/env") {
       return J({ ok: true, env: {
-        CONFIG_KEYS: env.CONFIG_KEYS || null,
+        CONFIG_KEYS: env.CONFIG_KEYS || null, // nur Info; wird NICHT genutzt
         IP_ALLOWLIST: env.IP_ALLOWLIST || "",
         ADMIN_REALM: env.ADMIN_REALM || "",
         has_ADMIN_USER: !!env.ADMIN_USER,
         has_ADMIN_PASS: !!env.ADMIN_PASS
       }});
     }
+
     return new Response("Not found", { status: 404, headers: secHeaders() });
   }
 };
@@ -137,16 +149,19 @@ export default {
 function basicOk(req, env) {
   const h = req.headers.get("authorization") || "";
   if (!h.startsWith("Basic ")) return false;
+  // Cloudflare Workers haben global atob/btoa
   const [u, p] = atob(h.slice(6)).split(":");
   return u === env.ADMIN_USER && p === env.ADMIN_PASS;
 }
+
 function ipOk(req, env) {
   const allow = (env.IP_ALLOWLIST || "")
     .split(",").map(s => s.trim()).filter(Boolean);
-  if (allow.length === 0) return true;
+  if (allow.length === 0) return true; // keine Liste → keine Einschränkung
   const ip = req.headers.get("cf-connecting-ip") || "";
   return allow.includes(ip);
 }
+
 async function listAll(KV, { prefix = "", cap = 5000 } = {}) {
   const out = []; let cursor;
   while (out.length < cap) {
@@ -156,25 +171,29 @@ async function listAll(KV, { prefix = "", cap = 5000 } = {}) {
   }
   return out;
 }
+
 async function readJson(req) {
   const ct = (req.headers.get("content-type") || "").toLowerCase();
   if (!ct.includes("application/json")) return null;
   try { return await req.json(); } catch { return null; }
 }
+
 function badCT() { return new Response("Bad Content-Type", { status: 415, headers: secHeaders() }); }
+
 function J(x, status = 200) {
   return new Response(JSON.stringify(x), {
     status,
     headers: { "content-type": "application/json; charset=utf-8", ...secHeaders() }
   });
 }
+
 function secHeaders() {
+  // CSP ist streng, aber erlaubt genau das, was die UI braucht
   return {
     "x-content-type-options": "nosniff",
     "referrer-policy": "strict-origin-when-cross-origin",
     "permissions-policy": "geolocation=(), microphone=(), camera=()",
     "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
-    // UI hat Inline-Script — nur hier erlaubt:
     "content-security-policy":
       "default-src 'self'; " +
       "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; " +
@@ -238,7 +257,7 @@ async function toAppCfg(env) {
     get("early_flat_usdc"),
   ]);
 
-  // Form für app.js (falls wir direkt füttern wollen)
+  // Kompakt-Objekt, das dein /token/app.js direkt versteht (optional)
   return {
     CLUSTER: "mainnet-beta",
     RPC: RPC || "https://api.mainnet-beta.solana.com",
@@ -348,7 +367,7 @@ function ui() {
         </div>
         <div style="flex:1 1 220px">
           <label>TGE (Unix s)</label>
-          <input id="tge" type="number" placeholder="z.B. 1735689600" />
+          <input id="tge" type="number" placeholder="z.B. 1764003600" />
         </div>
         <div style="flex:1 1 220px">
           <label>Cap / Wallet (USDC)</label>
