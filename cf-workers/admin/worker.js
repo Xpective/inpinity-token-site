@@ -208,6 +208,10 @@ const DEFAULT_KEYS = [
   "presale_target_usdc",
   "cap_per_wallet_usdc",
   "presale_deposit_usdc",
+  "cap_per_wallet_usdc",
+  "presale_deposit_usdc" 
+  "presale_min_usdc",
+  "presale_max_usdc",
   "public_rpc_url",
 
   // Gate (KV & ENV-Fallbacks)
