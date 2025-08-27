@@ -1,22 +1,18 @@
-// INPI Admin Worker (Basic + optional TOTP, Cron-Proxies, Config-API) – Whitelist OFF
-// Bindings/Secrets:
-// - KV: CONFIG (required), OPS (optional für Audit)
+// INPI Admin Worker (Whitelist HARD-OFF)
+// - KV: CONFIG (required), OPS (optional)
 // - Secrets: ADMIN_USER, ADMIN_PASS
-// - Optional Secrets: ADMIN_TOTP_SECRET, ADMIN_TOTP_PERIOD, ADMIN_TOTP_WINDOW
-// - ENV/Secret: CRON_BASE (z.B. https://inpinity.online/cron), OPS_API_KEY, OPS_HMAC_ALGO
-// - Optional: IP_ALLOWLIST (CSV)
-//   >> Whitelist ist in diesem Build HARD-OFF: CONFIG_KEYS/CONFIG_ALLOW_ALL werden ignoriert.
+// - Optional: ADMIN_TOTP_SECRET (+ PERIOD/WINDOW), IP_ALLOWLIST, CRON_BASE, OPS_API_KEY, OPS_HMAC_ALGO
 
 export default {
   async fetch(req, env) {
-    // Basic + IP-Check
+    // Basic + optional IP-Check
     if (!basicOk(req, env) || !ipOk(req, env)) {
       return new Response("Unauthorized", {
         status: 401,
         headers: {
           "WWW-Authenticate": `Basic realm="${env.ADMIN_REALM || "Admin"}"`,
           ...secHeaders(),
-          "x-require-otp": "1"
+          "x-require-otp": "1" // nur Info-Header
         }
       });
     }
@@ -24,7 +20,7 @@ export default {
     const url = new URL(req.url);
     const p = url.pathname;
 
-    // OTP nur, wenn Secret gesetzt ist
+    // OTP nur erzwingen, wenn ADMIN_TOTP_SECRET gesetzt ist
     const mustOtp = needsOtp(p);
     if (mustOtp && env.ADMIN_TOTP_SECRET) {
       const otp = getOtpFromReq(req);
@@ -37,12 +33,14 @@ export default {
       if (!ok) return J({ ok: false, error: "bad_otp" }, 401, { "x-require-otp": "1" });
     }
 
-    // Mini UI
-    if (req.method === "GET" && (p === "/admin" || p === "/admin/")) return ui(env);
+    // Mini-UI
+    if (req.method === "GET" && (p === "/admin" || p === "/admin/")) {
+      return ui(env);
+    }
 
-    // ------------- CONFIG API -------------
+    /* ===================== CONFIG API (ohne Whitelist) ===================== */
 
-    // Keys (immer alle – Whitelist OFF)
+    // Alle Keys (immer allow_all:true)
     if (req.method === "GET" && p === "/admin/config/keys") {
       const all = await listAllConfigKeys(env, { cap: 5000 });
       return J({ ok: true, allow_all: true, keys: all });
@@ -61,7 +59,7 @@ export default {
       return J({ ok: true, allow_all: true, keys, values: out });
     }
 
-    // Set (immer erlaubt)
+    // Set (ohne Restriktionen)
     if (req.method === "POST" && p === "/admin/config/set") {
       if (!(await requireJson(req))) return badCT();
       const { key, value } = await req.json().catch(() => ({}));
@@ -71,17 +69,21 @@ export default {
       return J({ ok: true });
     }
 
-    // Setmany (immer erlaubt)
+    // Setmany (ohne Restriktionen)
     if (req.method === "POST" && p === "/admin/config/setmany") {
       if (!(await requireJson(req))) return badCT();
       const { entries } = await req.json().catch(() => ({}));
-      if (!entries || typeof entries !== "object") return J({ ok: false, error: "entries_object_required" }, 400);
-      await Promise.all(Object.entries(entries).map(([k, v]) => env.CONFIG.put(String(k), String(v ?? ""))));
+      if (!entries || typeof entries !== "object") {
+        return J({ ok: false, error: "entries_object_required" }, 400);
+      }
+      await Promise.all(Object.entries(entries).map(([k, v]) =>
+        env.CONFIG.put(String(k), String(v ?? ""))
+      ));
       await audit(env, "config_setmany", { count: Object.keys(entries).length });
       return J({ ok: true });
     }
 
-    // Delete (immer erlaubt)
+    // Delete (ohne Restriktionen)
     if (req.method === "POST" && p === "/admin/config/delete") {
       if (!(await requireJson(req))) return badCT();
       const { key } = await req.json().catch(() => ({}));
@@ -105,17 +107,21 @@ export default {
       });
     }
 
-    // Import (alles schreiben)
+    // Import (alles durchlassen)
     if (req.method === "POST" && p === "/admin/config/import") {
       if (!(await requireJson(req))) return badCT();
       const { values } = await req.json().catch(() => ({}));
-      if (!values || typeof values !== "object") return J({ ok: false, error: "values_object_required" }, 400);
-      await Promise.all(Object.entries(values).map(([k, v]) => env.CONFIG.put(String(k), String(v ?? ""))));
+      if (!values || typeof values !== "object") {
+        return J({ ok: false, error: "values_object_required" }, 400);
+      }
+      await Promise.all(Object.entries(values).map(([k, v]) =>
+        env.CONFIG.put(String(k), String(v ?? ""))
+      ));
       await audit(env, "config_import", { count: Object.keys(values).length, allow_all: true });
       return J({ ok: true, allow_all: true, written: Object.keys(values).length });
     }
 
-    // -------- CRON PROXIES (mit Bearer + HMAC) --------
+    /* ===================== CRON / OPS PROXIES ===================== */
     if (req.method === "GET" && p === "/admin/cron/status") {
       const r = await proxyCron(env, "/status", "GET", null);
       return pass(r);
@@ -139,7 +145,9 @@ export default {
     }
 
     // Health
-    if (req.method === "GET" && p === "/admin/health") return J({ ok: true, now: Date.now(), allow_all: true });
+    if (req.method === "GET" && p === "/admin/health") {
+      return J({ ok: true, now: Date.now(), allow_all: true });
+    }
 
     return new Response("Not found", { status: 404, headers: secHeaders() });
   }
@@ -163,15 +171,14 @@ function needsOtp(path) {
   return path.startsWith("/admin/config") || path.startsWith("/admin/cron") || path.startsWith("/admin/ops");
 }
 
-/* --------------------- Key-Liste (nur für UI/Dumps) --------------------- */
+/* --------------------- Key-Liste (für UI/Dumps) --------------------- */
 async function listAllConfigKeys(env, { prefix = "", cap = 1000 } = {}) {
   let cursor = undefined;
   const found = [];
   while (found.length < cap) {
     const res = await env.CONFIG.list({ prefix, cursor });
     (res.keys || []).forEach(k => found.push(k.name));
-    if (!res.list_complete && res.cursor) cursor = res.cursor;
-    else break;
+    if (!res.list_complete && res.cursor) cursor = res.cursor; else break;
   }
   return found;
 }
@@ -211,9 +218,7 @@ async function requireJson(req) {
   const ct = (req.headers.get("content-type") || "").toLowerCase();
   return ct.includes("application/json");
 }
-function badCT() {
-  return new Response("Bad Content-Type", { status: 415, headers: secHeaders() });
-}
+function badCT() { return new Response("Bad Content-Type", { status: 415, headers: secHeaders() }); }
 const J = (x, status = 200, extraHeaders = {}) =>
   new Response(JSON.stringify(x), { status, headers: { "content-type": "application/json", ...secHeaders(), ...extraHeaders } });
 function secHeaders() {
@@ -246,10 +251,7 @@ async function verifyTOTP(secretBase32, code, { period = 30, window = 1, digits 
 }
 async function hotp(keyBytes, counter, { digits = 6, algo = "SHA-1" } = {}) {
   const counterBuf = new Uint8Array(8);
-  for (let i = 7; i >= 0; i--) {
-    counterBuf[i] = counter & 0xff;
-    counter = Math.floor(counter / 256);
-  }
+  for (let i = 7; i >= 0; i--) { counterBuf[i] = counter & 0xff; counter = Math.floor(counter / 256); }
   const cryptoKey = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: { name: algo } }, false, ["sign"]);
   const mac = new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, counterBuf));
   const offset = mac[mac.length - 1] & 0x0f;
@@ -306,11 +308,9 @@ button.secondary{ background:#263446; }
 code,kbd{ background:#0b0f14; padding:2px 6px; border-radius:6px; border:1px solid #223; }
 small.mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; }
 .grid{ display:grid; grid-template-columns: 220px 1fr; gap:.6rem .8rem; align-items:center; }
-.muted{ color:#a9b3be }
-hr{ border:0; border-top:1px solid #233; margin:12px 0; }
+.muted{ color:#a9b3be } hr{ border:0; border-top:1px solid #233; margin:12px 0; }
 pre.small{ font-size:12px; white-space:pre-wrap; word-break:break-word }
 .row{ display:flex; gap:.5rem; flex-wrap:wrap; align-items:center }
-input[type="number"]{ width:120px }
 </style>
 <header>
   <h1>INPI Admin</h1>
@@ -324,13 +324,13 @@ input[type="number"]{ width:120px }
   <section class="card">
     <div style="display:flex;align-items:baseline;gap:.6rem">
       <h2 style="margin:0">Config bearbeiten</h2>
-      <small id="wlState" class="muted">Whitelist: OFF</small>
+      <small class="muted">Whitelist: OFF</small>
     </div>
     <div class="grid">
       <label>Key</label>
       <div>
         <select id="key"></select>
-        <small class="muted">z.B. <code>gate_collection</code>, <code>tier_nft_price_usdc</code>, <code>early_claim_enabled</code>, <code>public_rpc_url</code></small>
+        <small class="muted">Beispiel: <code>gate_collection</code>, <code>presale_min_usdc</code>, <code>public_rpc_url</code></small>
       </div>
       <label>Value</label>
       <textarea id="val" rows="2" placeholder="Wert (String)"></textarea>
@@ -349,7 +349,7 @@ input[type="number"]{ width:120px }
       <input type="file" id="file" accept="application/json"/>
       <button id="btnImport" class="secondary">Import</button>
     </div>
-    <p class="muted">Immer ALLE Keys.</p>
+    <p class="muted">Es werden immer <b>alle</b> Keys genutzt.</p>
   </section>
 
   <section class="card">
@@ -367,7 +367,16 @@ input[type="number"]{ width:120px }
   </section>
 </main>
 <script>
+const OTP_KEY = "inpi_admin_otp";
+function getOtp(){ return document.getElementById('otp').value.trim(); }
+function setOtp(v){ document.getElementById('otp').value = v || ""; }
+document.getElementById('saveOtp').onclick = ()=>{ localStorage.setItem(OTP_KEY, getOtp()); alert('OTP gespeichert'); };
+setOtp(localStorage.getItem(OTP_KEY) || "");
+
 async function jfetch(url, opt={}){
+  const otp = getOtp();
+  opt.headers = opt.headers || {};
+  if (otp) opt.headers['x-otp'] = otp;
   const r = await fetch(url, opt);
   const t = await r.text();
   let j=null; try { j = JSON.parse(t); } catch {}
@@ -383,32 +392,32 @@ async function loadDump(){
   const { j } = await jfetch('/admin/config');
   document.getElementById('dump').textContent = JSON.stringify(j?.values||{}, null, 2);
 }
-document.getElementById('btnSet')?.addEventListener('click', async()=>{
+document.getElementById('btnSet').onclick = async()=>{
   const key = document.getElementById('key').value;
   const value = document.getElementById('val').value;
   const { j:res } = await jfetch('/admin/config/set', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ key, value }) });
   alert(JSON.stringify(res)); loadDump();
-});
-document.getElementById('btnDel')?.addEventListener('click', async()=>{
+};
+document.getElementById('btnDel').onclick = async()=>{
   const key = document.getElementById('key').value;
   const { j:res } = await jfetch('/admin/config/delete', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ key }) });
   alert(JSON.stringify(res)); loadDump();
-});
-document.getElementById('btnExport')?.addEventListener('click', async()=>{
+};
+document.getElementById('btnExport').onclick = async()=>{
   const { r } = await jfetch('/admin/config/export');
   const b = await r.blob(); const a=document.createElement('a'); a.href= URL.createObjectURL(b); a.download='inpi-config-export.json'; a.click();
-});
-document.getElementById('btnImport')?.addEventListener('click', async()=>{
+};
+document.getElementById('btnImport').onclick = async()=>{
   const f = document.getElementById('file').files[0]; if(!f) return alert('JSON wählen');
   const txt = await f.text(); const { j:res } = await jfetch('/admin/config/import', { method:'POST', headers:{'content-type':'application/json'}, body: txt });
   alert(JSON.stringify(res)); loadDump();
-});
-document.getElementById('btnGateCheck')?.addEventListener('click', async ()=>{
+};
+document.getElementById('btnGateCheck').onclick = async ()=>{
   const w = document.getElementById('chkWallet').value.trim();
   if(!w) return alert('Wallet eingeben');
   const r = await fetch('/api/token/wallet/balances?wallet=' + encodeURIComponent(w));
   document.getElementById('gateOut').textContent = await r.text();
-});
+};
 loadKeys().then(loadDump);
 </script>`;
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", ...secHeaders() }});
