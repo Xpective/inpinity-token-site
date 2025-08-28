@@ -1,12 +1,10 @@
-// admin/worker.js
-// INPI Admin – minimal, fokus auf CONFIG + UI + Presets
-// ----------------------------------------------------
-// Änderungen ggü. deiner Version:
-// - KV-Binding auf env.INPI_CONFIG umgestellt (passend zum wrangler.toml)
+// INPI Admin – minimal, Fokus auf INPI_CONFIG + UI + Presets
+// ----------------------------------------------------------
+// => WICHTIG: KV-Binding ist env.INPI_CONFIG (zu wrangler.toml passend)
 
 export default {
   async fetch(req, env) {
-    // Auth + optional IP-Whitelist (muss vor ALLEM passieren)
+    // Auth + optional IP-Whitelist
     if (!basicOk(req, env) || !ipOk(req, env)) {
       return new Response("Unauthorized", {
         status: 401,
@@ -30,7 +28,7 @@ export default {
       return ui();
     }
 
-    // ---- CONFIG: list keys (ALLE tatsächlichen Keys aus KV, keine Whitelist) ----
+    // ---- CONFIG: list keys (ALLE tatsächlichen Keys aus KV, optional prefix) ----
     if (req.method === "GET" && p === "/admin/config/keys") {
       const prefix = url.searchParams.get("prefix") || "";
       const keys = await listAll(env.INPI_CONFIG, { prefix });
@@ -114,7 +112,7 @@ export default {
       return J({ ok: true, written: Object.keys(entries).length, entries });
     }
 
-    // ---- PUBLIC MAPPING für app.js ----
+    // ---- PUBLIC MAPPING für app.js (/public/app-cfg) ----
     if (req.method === "GET" && p === "/public/app-cfg") {
       const map = await toAppCfg(env);
       return J(map);
@@ -126,7 +124,7 @@ export default {
     }
     if (req.method === "GET" && p === "/admin/env") {
       return J({ ok: true, env: {
-        CONFIG_KEYS: env.CONFIG_KEYS || null, // Info; ungenutzt
+        CONFIG_KEYS: env.CONFIG_KEYS || null,
         IP_ALLOWLIST: env.IP_ALLOWLIST || "",
         ADMIN_REALM: env.ADMIN_REALM || "",
         has_ADMIN_USER: !!env.ADMIN_USER,
@@ -189,31 +187,56 @@ function secHeaders() {
     "content-security-policy":
       "default-src 'self'; " +
       "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; " +
-      "connect-src 'self' https://api.mainnet-beta.solana.com https://rpc.helius.xyz; " +
+      "connect-src 'self' https://api.mainnet-beta.solana.com https://rpc.helius.xyz https://inpinity.online; " +
       "img-src 'self' data: https://api.qrserver.com; " +
       "style-src 'self' 'unsafe-inline'; " +
       "frame-ancestors 'none'; base-uri 'none'"
   };
 }
 
-/* ---- INPI Preset (unsere echten Defaults) ---- */
+/* ---- INPI Preset (echte Defaults) ---- */
 function buildInpiPreset(over = {}) {
   const def = {
+    // Core
     INPI_MINT:               "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
     creator_pubkey:          "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
-    presale_deposit_usdc:    "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
+    public_rpc_url:          "https://api.mainnet-beta.solana.com",
+    presale_state:           "pre",
+    tge_ts:                  "1764003600",
+
+    // Pricing
     presale_price_usdc:      "0.00031415",
-    nft_gate_enabled:        "true",
+    public_mint_price_usdc:  "0.00031415",
+    public_price_usdc:       "0.00031415",
+
+    // Deposit / Caps
+    presale_deposit_usdc:    "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
+    presale_min_usdc:        "0",
+    presale_max_usdc:        "25000",
+    cap_per_wallet_usdc:     "1000",
+
+    // Gate
+    nft_gate_enabled:        "false",
     gate_discount_bps:       "1000",
-    gate_collection:         "6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ",
+    gate_collection:         "",
+    gate_mint:               "",
+
+    // Early claim
     early_claim_enabled:     "true",
     early_flat_usdc:         "1",
     early_fee_usdc_ata:      "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
-    public_rpc_url:          "https://api.mainnet-beta.solana.com",
-    presale_state:           "pre",
+
+    // Tokenomics
     airdrop_bonus_bps:       "600",
-    cap_per_wallet_usdc:     "",
-    tge_ts:                  ""
+    supply_total:            "3141592653",
+    dist_presale_bps:        "1000",
+    dist_dex_liquidity_bps:  "2000",
+    dist_staking_bps:        "700",
+    dist_ecosystem_bps:      "2000",
+    dist_treasury_bps:       "1500",
+    dist_team_bps:           "1000",
+    dist_airdrop_nft_bps:    "1000",
+    dist_buyback_reserve_bps:"800"
   };
   for (const [k, v] of Object.entries(over || {})) {
     if (v === undefined || v === null) continue;
@@ -227,7 +250,7 @@ async function toAppCfg(env) {
   const get = (k) => env.INPI_CONFIG.get(k);
   const [
     RPC, INPI_MINT, CREATOR, DEPOSIT_ATA, PRICE,
-    DISC, COLL, EARLY_FEE, EARLY_FLAT
+    DISC, COLL, EARLY_FEE, EARLY_FLAT, API_BASE
   ] = await Promise.all([
     get("public_rpc_url"),
     get("INPI_MINT"),
@@ -238,6 +261,7 @@ async function toAppCfg(env) {
     get("gate_collection"),
     get("early_fee_usdc_ata"),
     get("early_flat_usdc"),
+    get("api_base") // optional override
   ]);
 
   return {
@@ -251,9 +275,9 @@ async function toAppCfg(env) {
     CREATOR_USDC_ATA: DEPOSIT_ATA || "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
     PRICE_USDC_PER_INPI: Number(PRICE || "0.00031415"),
     DISCOUNT_BPS: Number(DISC || "1000"),
-    COLLECTION_MINT: COLL || "6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ",
+    COLLECTION_MINT: COLL || "",
     EARLY_CLAIM_FEE_USDC: Number(EARLY_FLAT || "1.0"),
-    API_BASE: "https://inpinity.online/api/token"
+    API_BASE: API_BASE || "https://inpinity.online/api/token"
   };
 }
 
@@ -268,7 +292,7 @@ function ui() {
   <style>
     :root{ --bg:#0b0d10; --elev:#12151a; --line:#2a3240; --txt:#e9eef6; --mut:#9fb0c3; --pri:#6aa2ff; --ok:#29cc7a; --err:#ff5d73; --rad:12px; --sh:0 10px 30px rgba(0,0,0,.25); }
     body{ margin:0; background:var(--bg); color:var(--txt); font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto; }
-    header{ position:sticky; top:0; background:var(--elev); border-bottom:1px solid var(--line); padding:12px 16px; display:flex; align-items:center; gap:12px; }
+    header{ position:sticky; top:0; background:var(--elev); border-bottom:1px solid var(--line); padding:12px 16px; display:flex; align-items:center; gap:12px; z-index:10; }
     h1{ font-size:18px; margin:0; }
     main{ max-width:1100px; margin:0 auto; padding:20px 16px 80px; }
     .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
@@ -322,7 +346,7 @@ function ui() {
         </div>
         <div style="flex:1 1 260px">
           <label>Gate Collection</label>
-          <input id="gatecoll" placeholder="6xvw..." />
+          <input id="gatecoll" placeholder="collection mint" />
         </div>
         <div style="flex:1 1 260px">
           <label>Early Fee USDC-ATA</label>
@@ -352,7 +376,7 @@ function ui() {
       <div class="row" style="margin-top:10px">
         <button id="btnPreset">Preset speichern</button>
         <button id="btnDefaults" class="secondary">INPI Defaults speichern</button>
-        <small class="mut">Schreibt die Felder (oder Defaults) in <code>CONFIG</code>.</small>
+        <small class="mut">Schreibt die Felder (oder Defaults) in <code>INPI_CONFIG</code>.</small>
       </div>
     </section>
 
@@ -373,7 +397,7 @@ function ui() {
       <h2 style="margin:0 0 8px">Import / Export</h2>
       <div class="row"><textarea id="importBox" placeholder='{"values":{"presale_state":"pre","presale_deposit_usdc":"..."}}'></textarea></div>
       <div class="row" style="margin-top:8px">
-        <button id="btnImport">Import JSON → CONFIG</button>
+        <button id="btnImport">Import JSON → INPI_CONFIG</button>
         <small class="mut">POST /admin/config/import</small>
       </div>
     </section>
