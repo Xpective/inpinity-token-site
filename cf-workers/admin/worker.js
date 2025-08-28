@@ -1,20 +1,9 @@
-// INPI Admin – minimal, Fokus auf INPI_CONFIG + UI + Presets
-// ----------------------------------------------------------
-// => WICHTIG: KV-Binding ist env.INPI_CONFIG (zu wrangler.toml passend)
+// INPI Admin – minimal, Fokus auf CONFIG + UI + Presets
+// ------------------------------------------------------
+// KV-Priorität: env.CONFIG (neu) -> Fallback env.INPI_CONFIG (alt)
 
 export default {
   async fetch(req, env) {
-    // Auth + optional IP-Whitelist
-    if (!basicOk(req, env) || !ipOk(req, env)) {
-      return new Response("Unauthorized", {
-        status: 401,
-        headers: {
-          "WWW-Authenticate": `Basic realm="${env.ADMIN_REALM || "INPI Admin"}"`,
-          ...secHeaders()
-        }
-      });
-    }
-
     const url = new URL(req.url);
     const p = url.pathname;
 
@@ -23,15 +12,32 @@ export default {
       return new Response(null, { status: 204, headers: secHeaders() });
     }
 
+    // /public/* ist öffentlich (z.B. /public/app-cfg)
+    if (p === "/public/app-cfg" && req.method === "GET") {
+      const map = await toAppCfg(env);
+      return J(map);
+    }
+
+    // Alles andere unter /admin* ist geschützt
+    if (!basicOk(req, env) || !ipOk(req, env)) {
+      return new Response("Unauthorized", {
+        status: 401,
+        headers: {
+          "WWW-Authenticate": `Basic realm="${env.ADMIN_REALM || "INPI Admin"}"`,
+          ...secHeaders(),
+        },
+      });
+    }
+
     // ---- UI ----
     if (req.method === "GET" && (p === "/admin" || p === "/admin/")) {
       return ui();
     }
 
-    // ---- CONFIG: list keys (ALLE tatsächlichen Keys aus KV, optional prefix) ----
+    // ---- CONFIG: list keys (optional prefix) ----
     if (req.method === "GET" && p === "/admin/config/keys") {
       const prefix = url.searchParams.get("prefix") || "";
-      const keys = await listAll(env.INPI_CONFIG, { prefix });
+      const keys = await listAll(CFG_KV(env), { prefix });
       return J({ ok: true, keys });
     }
 
@@ -39,83 +45,81 @@ export default {
     if (req.method === "GET" && p === "/admin/config") {
       const qKey = url.searchParams.get("key");
       if (qKey) {
-        const v = await env.INPI_CONFIG.get(qKey);
+        const v = await CFG_KV(env).get(qKey);
         return J({ ok: true, key: qKey, value: v ?? null });
       }
-      const keys = await listAll(env.INPI_CONFIG);
+      const keys = await listAll(CFG_KV(env));
       const values = {};
-      await Promise.all(keys.map(async k => (values[k] = await env.INPI_CONFIG.get(k))));
+      await Promise.all(keys.map(async (k) => (values[k] = await CFG_KV(env).get(k))));
       return J({ ok: true, keys, values });
     }
 
     // ---- CONFIG: set one ----
     if (req.method === "POST" && p === "/admin/config/set") {
-      const body = await readJson(req); if (!body) return badCT();
+      const body = await readJson(req);
+      if (!body) return badCT();
       const { key, value } = body;
       if (!key) return J({ ok: false, error: "key_required" }, 400);
-      await env.INPI_CONFIG.put(String(key), String(value ?? ""));
+      await CFG_KV(env).put(String(key), String(value ?? ""));
       return J({ ok: true });
     }
 
     // ---- CONFIG: set many ----
     if (req.method === "POST" && p === "/admin/config/setmany") {
-      const body = await readJson(req); if (!body) return badCT();
+      const body = await readJson(req);
+      if (!body) return badCT();
       const { entries } = body;
       if (!entries || typeof entries !== "object")
         return J({ ok: false, error: "entries_object_required" }, 400);
-      await Promise.all(Object.entries(entries).map(([k, v]) =>
-        env.INPI_CONFIG.put(String(k), String(v ?? ""))
-      ));
+      await Promise.all(
+        Object.entries(entries).map(([k, v]) => CFG_KV(env).put(String(k), String(v ?? "")))
+      );
       return J({ ok: true, written: Object.keys(entries).length });
     }
 
     // ---- CONFIG: delete one ----
     if (req.method === "POST" && p === "/admin/config/delete") {
-      const body = await readJson(req); if (!body) return badCT();
+      const body = await readJson(req);
+      if (!body) return badCT();
       const { key } = body;
       if (!key) return J({ ok: false, error: "key_required" }, 400);
-      await env.INPI_CONFIG.delete(String(key));
+      await CFG_KV(env).delete(String(key));
       return J({ ok: true, deleted: key });
     }
 
-    // ---- CONFIG: export/import ----
+    // ---- CONFIG: export ----
     if (req.method === "GET" && p === "/admin/config/export") {
-      const keys = await listAll(env.INPI_CONFIG);
+      const keys = await listAll(CFG_KV(env));
       const values = {};
-      await Promise.all(keys.map(async k => (values[k] = await env.INPI_CONFIG.get(k))));
+      await Promise.all(keys.map(async (k) => (values[k] = await CFG_KV(env).get(k))));
       return new Response(JSON.stringify({ ts: Date.now(), values }, null, 2), {
         headers: {
           "content-type": "application/json",
           "content-disposition": "attachment; filename=inpi-config-export.json",
-          ...secHeaders()
-        }
+          ...secHeaders(),
+        },
       });
     }
+
+    // ---- CONFIG: import ----
     if (req.method === "POST" && p === "/admin/config/import") {
-      const body = await readJson(req); if (!body) return badCT();
+      const body = await readJson(req);
+      if (!body) return badCT();
       const { values } = body;
       if (!values || typeof values !== "object")
         return J({ ok: false, error: "values_object_required" }, 400);
-      await Promise.all(Object.entries(values).map(([k, v]) =>
-        env.INPI_CONFIG.put(String(k), String(v ?? ""))
-      ));
+      await Promise.all(
+        Object.entries(values).map(([k, v]) => CFG_KV(env).put(String(k), String(v ?? "")))
+      );
       return J({ ok: true, written: Object.keys(values).length });
     }
 
-    // ---- PRESET: INPI Defaults in einem Rutsch ----
+    // ---- PRESET: INPI Defaults ----
     if (req.method === "POST" && p === "/admin/preset/inpi") {
-      const body = await readJson(req) || {};
+      const body = (await readJson(req)) || {};
       const entries = buildInpiPreset(body);
-      await Promise.all(Object.entries(entries).map(([k, v]) =>
-        env.INPI_CONFIG.put(String(k), String(v))
-      ));
+      await Promise.all(Object.entries(entries).map(([k, v]) => CFG_KV(env).put(String(k), String(v))));
       return J({ ok: true, written: Object.keys(entries).length, entries });
-    }
-
-    // ---- PUBLIC MAPPING für app.js (/public/app-cfg) ----
-    if (req.method === "GET" && p === "/public/app-cfg") {
-      const map = await toAppCfg(env);
-      return J(map);
     }
 
     // ---- Health / Debug ----
@@ -123,20 +127,32 @@ export default {
       return J({ ok: true, now: Date.now() });
     }
     if (req.method === "GET" && p === "/admin/env") {
-      return J({ ok: true, env: {
-        CONFIG_KEYS: env.CONFIG_KEYS || null,
-        IP_ALLOWLIST: env.IP_ALLOWLIST || "",
-        ADMIN_REALM: env.ADMIN_REALM || "",
-        has_ADMIN_USER: !!env.ADMIN_USER,
-        has_ADMIN_PASS: !!env.ADMIN_PASS
-      }});
+      const which =
+        (env.CONFIG && "CONFIG") ||
+        (env.INPI_CONFIG && "INPI_CONFIG") ||
+        "none";
+      return J({
+        ok: true,
+        env: {
+          KV_binding: which,
+          IP_ALLOWLIST: env.IP_ALLOWLIST || "",
+          ADMIN_REALM: env.ADMIN_REALM || "",
+          has_ADMIN_USER: !!env.ADMIN_USER,
+          has_ADMIN_PASS: !!env.ADMIN_PASS,
+        },
+      });
     }
 
     return new Response("Not found", { status: 404, headers: secHeaders() });
-  }
+  },
 };
 
 /* ---------------- helpers ---------------- */
+
+function CFG_KV(env) {
+  // bevorzugt neues Binding
+  return env.CONFIG ?? env.INPI_CONFIG;
+}
 
 function basicOk(req, env) {
   const h = req.headers.get("authorization") || "";
@@ -147,18 +163,22 @@ function basicOk(req, env) {
 
 function ipOk(req, env) {
   const allow = (env.IP_ALLOWLIST || "")
-    .split(",").map(s => s.trim()).filter(Boolean);
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   if (allow.length === 0) return true;
   const ip = req.headers.get("cf-connecting-ip") || "";
   return allow.includes(ip);
 }
 
-async function listAll(KV, { prefix = "", cap = 5000 } = {}) {
-  const out = []; let cursor;
+async function listAll(KV, { prefix = "", cap = 10000 } = {}) {
+  const out = [];
+  let cursor;
   while (out.length < cap) {
     const r = await KV.list({ prefix, cursor });
-    (r.keys || []).forEach(k => out.push(k.name));
-    if (!r.list_complete && r.cursor) cursor = r.cursor; else break;
+    (r.keys || []).forEach((k) => out.push(k.name));
+    if (!r || r.list_complete || !r.cursor) break;
+    cursor = r.cursor;
   }
   return out;
 }
@@ -166,15 +186,21 @@ async function listAll(KV, { prefix = "", cap = 5000 } = {}) {
 async function readJson(req) {
   const ct = (req.headers.get("content-type") || "").toLowerCase();
   if (!ct.includes("application/json")) return null;
-  try { return await req.json(); } catch { return null; }
+  try {
+    return await req.json();
+  } catch {
+    return null;
+  }
 }
 
-function badCT() { return new Response("Bad Content-Type", { status: 415, headers: secHeaders() }); }
+function badCT() {
+  return new Response("Bad Content-Type", { status: 415, headers: secHeaders() });
+}
 
 function J(x, status = 200) {
   return new Response(JSON.stringify(x), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", ...secHeaders() }
+    headers: { "content-type": "application/json; charset=utf-8", ...secHeaders() },
   });
 }
 
@@ -187,10 +213,10 @@ function secHeaders() {
     "content-security-policy":
       "default-src 'self'; " +
       "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; " +
-      "connect-src 'self' https://api.mainnet-beta.solana.com https://rpc.helius.xyz https://inpinity.online; " +
+      "connect-src 'self' https://api.mainnet-beta.solana.com https://mainnet.helius-rpc.com https://rpc.helius.xyz https://inpinity.online; " +
       "img-src 'self' data: https://api.qrserver.com; " +
       "style-src 'self' 'unsafe-inline'; " +
-      "frame-ancestors 'none'; base-uri 'none'"
+      "frame-ancestors 'none'; base-uri 'none'",
   };
 }
 
@@ -198,46 +224,50 @@ function secHeaders() {
 function buildInpiPreset(over = {}) {
   const def = {
     // Core
-    INPI_MINT:               "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
-    creator_pubkey:          "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
-    public_rpc_url:          "https://api.mainnet-beta.solana.com",
-    presale_state:           "pre",
-    tge_ts:                  "1764003600",
+    INPI_MINT: "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
+    creator_pubkey: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
+    public_rpc_url: "https://api.mainnet-beta.solana.com",
+    presale_state: "pre",
+    tge_ts: "1764003600",
 
     // Pricing
-    presale_price_usdc:      "0.00031415",
-    public_mint_price_usdc:  "0.00031415",
-    public_price_usdc:       "0.00031415",
+    presale_price_usdc: "0.00031415",
+    public_mint_price_usdc: "0.00031415",
+    public_price_usdc: "0.00031415",
 
     // Deposit / Caps
-    presale_deposit_usdc:    "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
-    presale_min_usdc:        "0",
-    presale_max_usdc:        "25000",
-    cap_per_wallet_usdc:     "1000",
+    presale_deposit_usdc: "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
+    presale_min_usdc: "0",
+    presale_max_usdc: "25000",
+    cap_per_wallet_usdc: "1000",
 
     // Gate
-    nft_gate_enabled:        "false",
-    gate_discount_bps:       "1000",
-    gate_collection:         "",
-    gate_mint:               "",
+    nft_gate_enabled: "false",
+    gate_discount_bps: "1000",
+    gate_collection: "",
+    gate_mint: "",
 
     // Early claim
-    early_claim_enabled:     "true",
-    early_flat_usdc:         "1",
-    early_fee_usdc_ata:      "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
+    early_claim_enabled: "true",
+    early_flat_usdc: "1",
+    early_fee_usdc_ata: "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
 
     // Tokenomics
-    airdrop_bonus_bps:       "600",
-    supply_total:            "3141592653",
-    dist_presale_bps:        "1000",
-    dist_dex_liquidity_bps:  "2000",
-    dist_staking_bps:        "700",
-    dist_ecosystem_bps:      "2000",
-    dist_treasury_bps:       "1500",
-    dist_team_bps:           "1000",
-    dist_airdrop_nft_bps:    "1000",
-    dist_buyback_reserve_bps:"800"
+    airdrop_bonus_bps: "600",
+    supply_total: "3141592653",
+    dist_presale_bps: "1000",
+    dist_dex_liquidity_bps: "2000",
+    dist_staking_bps: "700",
+    dist_ecosystem_bps: "2000",
+    dist_treasury_bps: "1500",
+    dist_team_bps: "1000",
+    dist_airdrop_nft_bps: "1000",
+    dist_buyback_reserve_bps: "800",
+
+    // API Base (für /public/app-cfg)
+    api_base: "https://inpinity.online/api/token",
   };
+
   for (const [k, v] of Object.entries(over || {})) {
     if (v === undefined || v === null) continue;
     def[k] = String(v);
@@ -247,10 +277,19 @@ function buildInpiPreset(over = {}) {
 
 /* ---- Mapping für Frontend (/public/app-cfg) ---- */
 async function toAppCfg(env) {
-  const get = (k) => env.INPI_CONFIG.get(k);
+  const KV = CFG_KV(env);
+  const get = (k) => KV.get(k);
   const [
-    RPC, INPI_MINT, CREATOR, DEPOSIT_ATA, PRICE,
-    DISC, COLL, EARLY_FEE, EARLY_FLAT, API_BASE
+    RPC,
+    INPI_MINT,
+    CREATOR,
+    DEPOSIT_ATA,
+    PRICE,
+    DISC,
+    COLL,
+    EARLY_FEE_ATA,
+    EARLY_FLAT,
+    API_BASE,
   ] = await Promise.all([
     get("public_rpc_url"),
     get("INPI_MINT"),
@@ -261,7 +300,7 @@ async function toAppCfg(env) {
     get("gate_collection"),
     get("early_fee_usdc_ata"),
     get("early_flat_usdc"),
-    get("api_base") // optional override
+    get("api_base"),
   ]);
 
   return {
@@ -276,8 +315,9 @@ async function toAppCfg(env) {
     PRICE_USDC_PER_INPI: Number(PRICE || "0.00031415"),
     DISCOUNT_BPS: Number(DISC || "1000"),
     COLLECTION_MINT: COLL || "",
+    EARLY_CLAIM_FEE_USDC_ATA: EARLY_FEE_ATA || "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
     EARLY_CLAIM_FEE_USDC: Number(EARLY_FLAT || "1.0"),
-    API_BASE: API_BASE || "https://inpinity.online/api/token"
+    API_BASE: API_BASE || "https://inpinity.online/api/token",
   };
 }
 
@@ -376,7 +416,7 @@ function ui() {
       <div class="row" style="margin-top:10px">
         <button id="btnPreset">Preset speichern</button>
         <button id="btnDefaults" class="secondary">INPI Defaults speichern</button>
-        <small class="mut">Schreibt die Felder (oder Defaults) in <code>INPI_CONFIG</code>.</small>
+        <small class="mut">Schreibt die Felder in <code>CONFIG</code> (Fallback <code>INPI_CONFIG</code>).</small>
       </div>
     </section>
 
@@ -397,7 +437,7 @@ function ui() {
       <h2 style="margin:0 0 8px">Import / Export</h2>
       <div class="row"><textarea id="importBox" placeholder='{"values":{"presale_state":"pre","presale_deposit_usdc":"..."}}'></textarea></div>
       <div class="row" style="margin-top:8px">
-        <button id="btnImport">Import JSON → INPI_CONFIG</button>
+        <button id="btnImport">Import JSON → CONFIG</button>
         <small class="mut">POST /admin/config/import</small>
       </div>
     </section>
