@@ -12,12 +12,25 @@ const CFG = {
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   API_BASE: "https://inpinity.online/api/token",
 
-  // Fallbacks, falls API mal nicht antwortet
+  // Preis-Fallbacks (falls API mal nicht antwortet)
   PRICE_WITHOUT_NFT_FALLBACK: 0.00031415,
   PRICE_WITH_NFT_FALLBACK:    0.000282735, // 10% Rabatt
+
+  // Deposit/Owner Fallbacks
   DEPOSIT_USDC_ATA_FALLBACK:  "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
+  DEPOSIT_OWNER_FALLBACK: null,
+
+  // Presale-Caps (werden aus /public/app-cfg übernommen, falls vorhanden)
+  PRESALE_MIN_USDC_FALLBACK: null,
+  PRESALE_MAX_USDC_FALLBACK: null,
+
+  // Airdrop-Bonus (bps)
+  AIRDROP_BONUS_BPS_FALLBACK: 600,
+
+  // TGE (Unix sek)
   TGE_TS_FALLBACK: Math.floor(Date.now()/1000) + 60*60*24*90,
 
+  // Tokenomics-Fallbacks
   SUPPLY_FALLBACK: 3141592653,
   DISTR_FALLBACK_BPS: {
     dist_presale_bps:        1000,
@@ -81,18 +94,59 @@ async function loadPublicAppCfg(){
     if (!r.ok) return;
     const c = await r.json();
 
+    // Basis
     if (c?.RPC) CFG.RPC = c.RPC;
     if (c?.API_BASE) CFG.API_BASE = c.API_BASE;
     if (c?.INPI_MINT) CFG.INPI_MINT = c.INPI_MINT;
     if (c?.USDC_MINT) CFG.USDC_MINT = c.USDC_MINT;
-    if (c?.CREATOR_USDC_ATA) CFG.DEPOSIT_USDC_ATA_FALLBACK = c.CREATOR_USDC_ATA;
 
+    // Deposit / Owner
+    if (c?.CREATOR_USDC_ATA) CFG.DEPOSIT_USDC_ATA_FALLBACK = c.CREATOR_USDC_ATA;
+    if (c?.DEPOSIT_OWNER) CFG.DEPOSIT_OWNER_FALLBACK = c.DEPOSIT_OWNER;
+
+    // Preis + Rabatt
     const base = Number(c?.PRICE_USDC_PER_INPI);
     const disc = Number(c?.DISCOUNT_BPS ?? 0);
     if (Number.isFinite(base) && base>0){
       CFG.PRICE_WITHOUT_NFT_FALLBACK = base;
       const withNft = base * (1 - (Number.isFinite(disc)? disc : 0)/10000);
       CFG.PRICE_WITH_NFT_FALLBACK = Math.round(withNft*1e6)/1e6;
+    }
+
+    // Caps
+    if (c?.PRESALE_MIN_USDC !== undefined) {
+      const v = Number(c.PRESALE_MIN_USDC);
+      CFG.PRESALE_MIN_USDC_FALLBACK = Number.isFinite(v) ? v : null;
+    }
+    if (c?.PRESALE_MAX_USDC !== undefined) {
+      const v = Number(c.PRESALE_MAX_USDC);
+      CFG.PRESALE_MAX_USDC_FALLBACK = Number.isFinite(v) ? v : null;
+    }
+
+    // TGE
+    if (c?.TGE_TS !== undefined) {
+      const v = Number(c.TGE_TS);
+      if (Number.isFinite(v) && v>0) CFG.TGE_TS_FALLBACK = v;
+    }
+
+    // Airdrop-Bonus
+    if (c?.AIRDROP_BONUS_BPS !== undefined) {
+      const v = Number(c.AIRDROP_BONUS_BPS);
+      if (Number.isFinite(v) && v>=0) CFG.AIRDROP_BONUS_BPS_FALLBACK = v;
+    }
+
+    // Tokenomics
+    if (c?.SUPPLY_TOTAL !== undefined){
+      const v = Number(c.SUPPLY_TOTAL);
+      if (Number.isFinite(v) && v>0) CFG.SUPPLY_FALLBACK = v;
+    }
+    if (c?.DISTR_BPS && typeof c.DISTR_BPS === "object"){
+      const merge = { ...CFG.DISTR_FALLBACK_BPS };
+      for (const k of Object.keys(merge)){
+        const v = Number(c.DISTR_BPS[k]);
+        if (Number.isFinite(v)) merge[k] = v;
+      }
+      CFG.DISTR_FALLBACK_BPS = merge;
     }
   }catch{}
 }
@@ -342,13 +396,24 @@ async function refreshStatus(){
     STATE.tge_ts        = (j?.tge_ts ?? CFG.TGE_TS_FALLBACK);
 
     STATE.deposit_ata   = j?.deposit_usdc_ata || CFG.DEPOSIT_USDC_ATA_FALLBACK;
-    STATE.deposit_owner = j?.deposit_usdc_owner || null;
+    STATE.deposit_owner = j?.deposit_usdc_owner || CFG.DEPOSIT_OWNER_FALLBACK || null;
 
-    STATE.presale_min_usdc = (typeof j?.presale_min_usdc === "number") ? j.presale_min_usdc : null;
-    STATE.presale_max_usdc = (typeof j?.presale_max_usdc === "number") ? j.presale_max_usdc : null;
+    STATE.presale_min_usdc = (typeof j?.presale_min_usdc === "number")
+      ? j.presale_min_usdc
+      : (typeof CFG.PRESALE_MIN_USDC_FALLBACK === "number" ? CFG.PRESALE_MIN_USDC_FALLBACK : null);
 
-    STATE.price_with_nft_usdc    = ("price_with_nft_usdc" in (j||{}))    ? (Number(j.price_with_nft_usdc)||null)    : (Number(j?.presale_price_usdc)||null);
-    STATE.price_without_nft_usdc = ("price_without_nft_usdc" in (j||{})) ? (Number(j.price_without_nft_usdc)||null) : (Number(j?.public_price_usdc)||null);
+    STATE.presale_max_usdc = (typeof j?.presale_max_usdc === "number")
+      ? j.presale_max_usdc
+      : (typeof CFG.PRESALE_MAX_USDC_FALLBACK === "number" ? CFG.PRESALE_MAX_USDC_FALLBACK : null);
+
+    STATE.price_with_nft_usdc    = ("price_with_nft_usdc" in (j||{}))
+      ? (Number(j.price_with_nft_usdc)||null)
+      : (Number(j?.presale_price_usdc)||null);
+
+    STATE.price_without_nft_usdc = ("price_without_nft_usdc" in (j||{}))
+      ? (Number(j.price_without_nft_usdc)||null)
+      : (Number(j?.public_price_usdc)||null);
+
     if (STATE.price_with_nft_usdc==null && STATE.price_without_nft_usdc==null){
       STATE.price_without_nft_usdc = CFG.PRICE_WITHOUT_NFT_FALLBACK;
       STATE.price_with_nft_usdc    = CFG.PRICE_WITH_NFT_FALLBACK;
@@ -358,8 +423,12 @@ async function refreshStatus(){
     STATE.early.enabled = !!ec.enabled;
     STATE.early.flat_usdc = Number(ec.flat_usdc || 1);
     STATE.early.fee_dest_wallet = ec.fee_dest_wallet || STATE.deposit_ata || null;
-    STATE.airdrop_bonus_bps = Number(j?.airdrop_bonus_bps ?? STATE.airdrop_bonus_bps);
 
+    STATE.airdrop_bonus_bps = Number(
+      j?.airdrop_bonus_bps ?? CFG.AIRDROP_BONUS_BPS_FALLBACK ?? STATE.airdrop_bonus_bps
+    );
+
+    // Tokenomics
     STATE.supply_total = Number(j?.supply_total || CFG.SUPPLY_FALLBACK);
     STATE.dist_bps = { ...CFG.DISTR_FALLBACK_BPS, ...{
       dist_presale_bps:        numOr(CFG.DISTR_FALLBACK_BPS.dist_presale_bps, j?.dist_presale_bps),
@@ -383,17 +452,35 @@ async function refreshStatus(){
     updatePriceRow(); updateIntentAvailability(); setBonusNote(); renderTokenomics(STATE.supply_total, STATE.dist_bps);
   } catch (e){
     console.error(e);
-    STATE.rpc_url=CFG.RPC; STATE.inpi_mint=CFG.INPI_MINT; STATE.usdc_mint=CFG.USDC_MINT;
-    STATE.presale_state="pre"; STATE.tge_ts=CFG.TGE_TS_FALLBACK; STATE.deposit_ata=CFG.DEPOSIT_USDC_ATA_FALLBACK;
-    STATE.price_without_nft_usdc=CFG.PRICE_WITHOUT_NFT_FALLBACK; STATE.price_with_nft_usdc=CFG.PRICE_WITH_NFT_FALLBACK;
-    STATE.supply_total=CFG.SUPPLY_FALLBACK; STATE.dist_bps={...CFG.DISTR_FALLBACK_BPS};
+    // harte Fallbacks aus CFG
+    STATE.rpc_url=CFG.RPC;
+    STATE.inpi_mint=CFG.INPI_MINT;
+    STATE.usdc_mint=CFG.USDC_MINT;
+
+    STATE.presale_state="pre";
+    STATE.tge_ts=CFG.TGE_TS_FALLBACK;
+
+    STATE.deposit_ata=CFG.DEPOSIT_USDC_ATA_FALLBACK;
+    STATE.deposit_owner=CFG.DEPOSIT_OWNER_FALLBACK || null;
+
+    STATE.presale_min_usdc = (typeof CFG.PRESALE_MIN_USDC_FALLBACK === "number") ? CFG.PRESALE_MIN_USDC_FALLBACK : null;
+    STATE.presale_max_usdc = (typeof CFG.PRESALE_MAX_USDC_FALLBACK === "number") ? CFG.PRESALE_MAX_USDC_FALLBACK : null;
+
+    STATE.price_without_nft_usdc=CFG.PRICE_WITHOUT_NFT_FALLBACK;
+    STATE.price_with_nft_usdc=CFG.PRICE_WITH_NFT_FALLBACK;
+
+    STATE.airdrop_bonus_bps = CFG.AIRDROP_BONUS_BPS_FALLBACK;
+
+    STATE.supply_total=CFG.SUPPLY_FALLBACK;
+    STATE.dist_bps={...CFG.DISTR_FALLBACK_BPS};
+
     if (presaleState) presaleState.textContent="API offline";
     if (depositAddrEl) depositAddrEl.textContent = STATE.deposit_ata || "—";
     if (depositSolscanA){
       if (STATE.deposit_ata){ depositSolscanA.href=solscan(STATE.deposit_ata); depositSolscanA.style.display="inline"; }
       else depositSolscanA.style.display="none";
     }
-    if (depositOwnerEl) depositOwnerEl.textContent = "—";
+    if (depositOwnerEl) depositOwnerEl.textContent = STATE.deposit_owner || "—";
     updatePriceRow(); updateIntentAvailability(); setBonusNote(); renderTokenomics(STATE.supply_total, STATE.dist_bps);
   }
 }
