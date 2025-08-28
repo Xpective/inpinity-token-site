@@ -1,13 +1,3 @@
-# cf-workers/api-token/wrangler.toml
-# ============================================
-# INPI Token API – Presale + Early Claim
-# cf-workers/api-token/wrangler.toml
-# ============================================
-# INPI Token API – Presale + Early Claim
-# Läuft hinter: https://inpinity.online/api/token/*
-# KV: INPI_CONFIG, INPI_PRESALE, INPI_CLAIMS
-# ============================================
-
 name = "api-token"
 main = "worker.js"
 compatibility_date = "2024-12-01"
@@ -17,27 +7,12 @@ routes = [
 ]
 
 kv_namespaces = [
-  { binding = "CONFIG",  id = "6dbc16b4eee148db82b66f8dbb8b6ca9" },
-  { binding = "INPI_PRESALE", id = "c7fe71ba6bd54e2a9ce76ed9c726a75d" },
-  { binding = "INPI_CLAIMS",  id = "485fc6ed252b445ba8ca18aaa9038e5c" }
+  { binding = "CONFIG",     id = "a82cb91c589b4b1a8c786807a49fe5f5" },
+  { binding = "PRESALE",    id = "c7fe71ba6bd54e2a9ce76ed9c726a75d" },
+  { binding = "INPI_CLAIMS",id = "485fc6ed252b445ba8ca18aaa9038e5c" }
 ]
 
 [vars]
-# Greifen nur, wenn nicht in INPI_CONFIG gesetzt:
-PRESALE_MIN_USDC = "0"
-PRESALE_MAX_USDC = "25000"
-
-# RPC-Reihenfolge: INPI_CONFIG.public_rpc_url > RPC_URL > (HELIUS) > Mainnet
-RPC_URL = "https://api.mainnet-beta.solana.com"
-# HELIUS_API_KEY = ""   # optional; leer lassen wenn nicht genutzt
-# Falls du Helius verwenden willst, bleibt das aktiv; sonst einfach leeren String setzen.
+# bevorzugt über KV (CONFIG.public_rpc_url). Falls leer, nutze HELIUS:
 HELIUS_API_KEY = "d95932bb-5385-4d84-ad18-7fc66e014d58"
-
-# ---------- Sonstiges ----------
-# Kein CORS-Stress: Der Worker sendet bereits permissive CORS-Header.
-# Nichts weiter hier nötig.
-
-# ---------- Secrets (NICHT im Klartext hier!) ----------
-# RECONCILE_KEY  (für /api/token/presale/reconcile-one)
-# Setzen mit:
-#   npx wrangler secret put RECONCILE_KEY
+# optional: RPC_URL = "https://api.mainnet-beta.solana.com"
