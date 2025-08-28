@@ -1,15 +1,19 @@
-// admin-lite – cleaner Admin nur für CONFIG-KV, ohne Key-Whitelist
-// Endpunkte:
-//   UI:               GET  /admin2
-//   Keys:             GET  /admin2/kv/keys?prefix=opt
-//   Get one:          GET  /admin2/kv/get?key=K
-//   Get all:          GET  /admin2/kv/all
-//   Set one:          POST /admin2/kv/set           { key, value }
-//   Set many:         POST /admin2/kv/setmany       { entries: {k:v,...} }
-//   Delete one:       POST /admin2/kv/delete        { key }
-//   Export:           GET  /admin2/kv/export        (Download JSON)
-//   Import:           POST /admin2/kv/import        { values: {k:v,...} }
-//   Public app-cfg:   GET  /admin2/public/app-cfg   (für Frontend-Fallback)
+// ============================
+// INPI Admin – CLEAN SLATE
+// ============================
+// - Greift direkt auf env.CONFIG (KV) zu
+// - KEINE Whitelist → jeder Key erlaubt
+// - Endpunkte (alle JSON, außer UI):
+//   UI:               GET  /admin
+//   Keys:             GET  /admin/kv/keys?prefix=opt
+//   Get all:          GET  /admin/kv/all
+//   Get one:          GET  /admin/kv/get?key=K
+//   Set one:          POST /admin/kv/set           { key, value }
+//   Set many:         POST /admin/kv/setmany       { entries: {k:v,...} }
+//   Delete one:       POST /admin/kv/delete        { key }
+//   Export:           GET  /admin/kv/export        (JSON Download)
+//   Import:           POST /admin/kv/import        { values: {k:v,...} }
+//   App-Cfg (Debug):  GET  /admin/app-cfg          (aus CONFIG gemappt)
 
 export default {
   async fetch(req, env) {
@@ -21,53 +25,69 @@ export default {
       return new Response(null, { status: 204, headers: secHeaders() });
     }
 
-    // Public Mapping (ohne Auth)
-    if (req.method === "GET" && p === "/admin2/public/app-cfg") {
-      const map = await toPublicAppCfg(env);
-      return J(map);
-    }
-
-    // alles andere: /admin2/* mit Auth
-    if (!p.startsWith("/admin2")) {
+    // Nur /admin* routen wir hier (laut wrangler.toml)
+    if (!p.startsWith("/admin")) {
       return new Response("Not found", { status: 404, headers: secHeaders() });
     }
-    if (!basicOk(req, env) || !ipOk(req, env)) {
-      return new Response("Unauthorized", {
-        status: 401,
-        headers: { "WWW-Authenticate": `Basic realm="${env.ADMIN_REALM || "Admin"}"`, ...secHeaders() }
-      });
+
+    // Public-JSON zum Debuggen (App-Cfg aus CONFIG) – hinter Auth
+    const needAuth =
+      p !== "/admin" && p !== "/admin/" && p !== "/admin/health";
+    if (needAuth) {
+      if (!basicOk(req, env) || !ipOk(req, env)) {
+        return new Response(JSON.stringify({ ok:false, error:"unauthorized" }), {
+          status: 401,
+          headers: {
+            "WWW-Authenticate": `Basic realm="${env.ADMIN_REALM || "Admin"}"`,
+            ...secHeaders(),
+            "content-type": "application/json; charset=utf-8"
+          }
+        });
+      }
     }
 
     // UI
-    if (req.method === "GET" && (p === "/admin2" || p === "/admin2/")) {
+    if (req.method === "GET" && (p === "/admin" || p === "/admin/")) {
+      // UI ist **nicht** öffentlich – also Auth prüfen
+      if (!basicOk(req, env) || !ipOk(req, env)) {
+        return new Response("Unauthorized", {
+          status: 401,
+          headers: { "WWW-Authenticate": `Basic realm="${env.ADMIN_REALM || "Admin"}"`, ...secHeaders() }
+        });
+      }
       return ui();
     }
 
-    // KV – Keys
-    if (req.method === "GET" && p === "/admin2/kv/keys") {
+    // Healthcheck (ohne Auth)
+    if (req.method === "GET" && p === "/admin/health") {
+      return J({ ok: true, now: Date.now() });
+    }
+
+    // Keys
+    if (req.method === "GET" && p === "/admin/kv/keys") {
       const prefix = url.searchParams.get("prefix") || "";
       const keys = await listAll(env.CONFIG, { prefix });
       return J({ ok: true, keys });
     }
 
-    // KV – all
-    if (req.method === "GET" && p === "/admin2/kv/all") {
+    // Get all
+    if (req.method === "GET" && p === "/admin/kv/all") {
       const keys = await listAll(env.CONFIG);
       const values = {};
       await Promise.all(keys.map(async k => (values[k] = await env.CONFIG.get(k))));
       return J({ ok: true, values });
     }
 
-    // KV – get one
-    if (req.method === "GET" && p === "/admin2/kv/get") {
+    // Get one
+    if (req.method === "GET" && p === "/admin/kv/get") {
       const key = url.searchParams.get("key");
       if (!key) return J({ ok: false, error: "key_required" }, 400);
       const value = await env.CONFIG.get(key);
       return J({ ok: true, key, value: value ?? null });
     }
 
-    // KV – set one
-    if (req.method === "POST" && p === "/admin2/kv/set") {
+    // Set one
+    if (req.method === "POST" && p === "/admin/kv/set") {
       const body = await readJson(req); if (!body) return badCT();
       const { key, value } = body;
       if (!key) return J({ ok: false, error: "key_required" }, 400);
@@ -75,21 +95,20 @@ export default {
       return J({ ok: true, written: 1 });
     }
 
-    // KV – set many (keine Whitelist!)
-    if (req.method === "POST" && p === "/admin2/kv/setmany") {
+    // Set many
+    if (req.method === "POST" && p === "/admin/kv/setmany") {
       const body = await readJson(req); if (!body) return badCT();
       const { entries } = body;
-      if (!entries || typeof entries !== "object") {
+      if (!entries || typeof entries !== "object")
         return J({ ok: false, error: "entries_object_required" }, 400);
-      }
-      const ops = Object.entries(entries).map(([k, v]) =>
-        env.CONFIG.put(String(k), String(v ?? "")));
-      await Promise.all(ops);
+      await Promise.all(Object.entries(entries).map(([k, v]) =>
+        env.CONFIG.put(String(k), String(v ?? ""))
+      ));
       return J({ ok: true, written: Object.keys(entries).length });
     }
 
-    // KV – delete
-    if (req.method === "POST" && p === "/admin2/kv/delete") {
+    // Delete one
+    if (req.method === "POST" && p === "/admin/kv/delete") {
       const body = await readJson(req); if (!body) return badCT();
       const { key } = body;
       if (!key) return J({ ok: false, error: "key_required" }, 400);
@@ -98,7 +117,7 @@ export default {
     }
 
     // Export
-    if (req.method === "GET" && p === "/admin2/kv/export") {
+    if (req.method === "GET" && p === "/admin/kv/export") {
       const keys = await listAll(env.CONFIG);
       const values = {};
       await Promise.all(keys.map(async k => (values[k] = await env.CONFIG.get(k))));
@@ -112,29 +131,21 @@ export default {
     }
 
     // Import
-    if (req.method === "POST" && p === "/admin2/kv/import") {
+    if (req.method === "POST" && p === "/admin/kv/import") {
       const body = await readJson(req); if (!body) return badCT();
       const { values } = body;
-      if (!values || typeof values !== "object") {
+      if (!values || typeof values !== "object")
         return J({ ok: false, error: "values_object_required" }, 400);
-      }
-      const ops = Object.entries(values).map(([k, v]) =>
-        env.CONFIG.put(String(k), String(v ?? "")));
-      await Promise.all(ops);
+      await Promise.all(Object.entries(values).map(([k, v]) =>
+        env.CONFIG.put(String(k), String(v ?? ""))
+      ));
       return J({ ok: true, written: Object.keys(values).length });
     }
 
-    // Health / Env
-    if (req.method === "GET" && p === "/admin2/health") {
-      return J({ ok: true, now: Date.now() });
-    }
-    if (req.method === "GET" && p === "/admin2/env") {
-      return J({ ok: true, env: {
-        realm: env.ADMIN_REALM || "",
-        ip_allowlist: env.IP_ALLOWLIST || "",
-        has_ADMIN_USER: !!env.ADMIN_USER,
-        has_ADMIN_PASS: !!env.ADMIN_PASS
-      }});
+    // App-Cfg (Debug) – wie dein Frontend es braucht
+    if (req.method === "GET" && p === "/admin/app-cfg") {
+      const map = await toPublicAppCfg(env);
+      return J(map);
     }
 
     return new Response("Not found", { status: 404, headers: secHeaders() });
@@ -176,7 +187,7 @@ function J(x, status = 200) {
     headers: { "content-type": "application/json; charset=utf-8", ...secHeaders() }
   });
 }
-function badCT() { return J({ ok:false, error:"Bad Content-Type" }, 415); }
+function badCT() { return J({ ok:false, error:"bad_content_type" }, 415); }
 function secHeaders() {
   return {
     "x-content-type-options": "nosniff",
@@ -191,7 +202,7 @@ function secHeaders() {
   };
 }
 
-/* ---- Public App-Cfg Mapping (für dein Frontend) ---- */
+/* ---- Mapping für Debug (/admin/app-cfg) ---- */
 async function toPublicAppCfg(env) {
   const get = (k) => env.CONFIG.get(k);
   const [
@@ -205,7 +216,7 @@ async function toPublicAppCfg(env) {
   ] = await Promise.all([
     get("public_rpc_url"),
     get("INPI_MINT"),
-    get("USDC_MINT"), // optional
+    get("USDC_MINT"),
     get("creator_pubkey"),
     get("presale_deposit_usdc"),
     get("presale_price_usdc"),
@@ -228,30 +239,20 @@ async function toPublicAppCfg(env) {
     get("dist_buyback_reserve_bps")
   ]);
 
-  // Zahlen sauber casten
-  const num = (x, d=null) => {
-    const n = Number(x); return Number.isFinite(n) ? n : d;
-  };
+  const num = (x, d=null) => { const n = Number(x); return Number.isFinite(n) ? n : d; };
 
   return {
     RPC: RPC || "https://api.mainnet-beta.solana.com",
     INPI_MINT: INPI_MINT || "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
     USDC_MINT: USDC_MINT || "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-
     CREATOR_USDC_ATA: DEPOSIT_ATA || "8PEkHngVQJoBMk68b1R5dyXjmqe3UthutSUbAYiGcpg6",
-    // Optional, falls du sie mal separat pflegst:
-    // DEPOSIT_OWNER: await get("deposit_usdc_owner") || null,
-
     PRICE_USDC_PER_INPI: num(PRICE, 0.00031415),
     DISCOUNT_BPS: num(DISC, 1000),
     COLLECTION_MINT: COLL || "",
-
     PRESALE_MIN_USDC: num(MIN_U, null),
     PRESALE_MAX_USDC: num(MAX_U, null),
-
     TGE_TS: num(TGE, Math.floor(Date.now()/1000) + 60*60*24*90),
     AIRDROP_BONUS_BPS: num(BONUS, 600),
-
     SUPPLY_TOTAL: num(SUPPLY, 3141592653),
     DISTR_BPS: {
       dist_presale_bps:         num(D_PRESALE, 1000),
@@ -263,7 +264,6 @@ async function toPublicAppCfg(env) {
       dist_airdrop_nft_bps:     num(D_AIRDROP, 1000),
       dist_buyback_reserve_bps: num(D_BUYBACK, 800)
     },
-
     EARLY_CLAIM_FEE_USDC: num(EARLY_FLAT, 1),
     API_BASE: API_BASE || "https://inpinity.online/api/token"
   };
@@ -276,11 +276,11 @@ function ui() {
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>INPI Admin Lite</title>
+<title>INPI Admin – KV</title>
 <style>
-:root{--bg:#0b0d10;--elev:#12151a;--line:#2a3240;--txt:#e9eef6;--mut:#9fb0c3;--pri:#6aa2ff;--ok:#29cc7a;--err:#ff5d73;--rad:12px}
+:root{--bg:#0b0d10;--elev:#12151a;--line:#2a3240;--txt:#e9eef6;--mut:#9fb0c3;--pri:#6aa2ff;--ok:#29cc7a;--err:#ff5d73}
 *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto}
-header{position:sticky;top:0;background:var(--elev);border-bottom:1px solid var(--line);padding:10px 14px;display:flex;gap:10px;align-items:center;z-index:5}
+header{position:sticky;top:0;background:var(--elev);border-bottom:1px solid var(--line);padding:10px 14px;display:flex;gap:10px;align-items:center}
 h1{font-size:18px;margin:0} main{max-width:1100px;margin:0 auto;padding:16px}
 .card{background:var(--elev);border:1px solid var(--line);border-radius:12px;padding:12px;margin:14px 0}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
@@ -295,11 +295,11 @@ code{background:#0a1a33;border:1px solid var(--line);padding:2px 6px;border-radi
 </head>
 <body>
 <header>
-  <h1>INPI Admin Lite</h1>
+  <h1>INPI Admin – KV</h1>
   <div class="row" style="margin-left:auto">
     <button id="btnReload" class="secondary">Neu laden</button>
     <button id="btnExport" class="secondary">Export</button>
-    <a href="/admin2/public/app-cfg" target="_blank" class="secondary" style="text-decoration:none"><button class="secondary">/public/app-cfg</button></a>
+    <a href="/admin/app-cfg" target="_blank" class="secondary" style="text-decoration:none"><button class="secondary">/admin/app-cfg</button></a>
   </div>
 </header>
 
@@ -310,7 +310,7 @@ code{background:#0a1a33;border:1px solid var(--line);padding:2px 6px;border-radi
     <textarea id="boxMany"></textarea>
     <div class="row" style="margin-top:8px">
       <button id="btnWriteMany">Schreiben</button>
-      <small class="mut">POST /admin2/kv/setmany</small>
+      <small class="mut">POST /admin/kv/setmany</small>
     </div>
   </section>
 
@@ -334,7 +334,7 @@ code{background:#0a1a33;border:1px solid var(--line);padding:2px 6px;border-radi
     <textarea id="boxImport" placeholder='{"values":{"presale_state":"pre","presale_deposit_usdc":"..."}}'></textarea>
     <div class="row" style="margin-top:8px">
       <button id="btnImport">Import JSON → CONFIG</button>
-      <small class="mut">POST /admin2/kv/import</small>
+      <small class="mut">POST /admin/kv/import</small>
     </div>
   </section>
 </main>
@@ -383,11 +383,10 @@ const DEFAULT_MANY = {
   api_base: "https://inpinity.online/api/token",
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 };
-
 document.getElementById('boxMany').value = JSON.stringify({ entries: DEFAULT_MANY }, null, 2);
 
 async function loadAll(){
-  const r = await fetch('/admin2/kv/all', { headers:{accept:'application/json'} });
+  const r = await fetch('/admin/kv/all', { headers:{accept:'application/json'} });
   const j = await r.json().catch(()=>({}));
   render(j.values||{});
 }
@@ -396,7 +395,7 @@ function render(values){
   const rows=Object.keys(values).sort().filter(k=>!q||k.toLowerCase().includes(q));
   TBL.innerHTML='';
   for (const k of rows){
-    const tr = document.createElement('tr');
+    const tr=document.createElement('tr');
     tr.innerHTML = \`
       <td><code>\${k}</code></td>
       <td><textarea data-k="\${k}" style="min-height:60px">\${values[k]??''}</textarea></td>
@@ -407,20 +406,19 @@ function render(values){
     TBL.appendChild(tr);
   }
 }
-
 document.getElementById('btnReload').onclick = loadAll;
-document.getElementById('btnExport').onclick = ()=>{ window.location.href = '/admin2/kv/export'; };
+document.getElementById('btnExport').onclick = ()=>{ window.location.href = '/admin/kv/export'; };
 
 document.getElementById('btnSet').onclick = async ()=>{
   const key=(K.value||'').trim(); if(!key) return alert('Key fehlt');
   const value=V.value||'';
-  await fetch('/admin2/kv/set', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({key,value}) });
+  await fetch('/admin/kv/set', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({key,value}) });
   await loadAll();
 };
 document.getElementById('btnDel').onclick = async ()=>{
   const key=(K.value||'').trim(); if(!key) return alert('Key fehlt');
   if(!confirm('Delete '+key+'?')) return;
-  await fetch('/admin2/kv/delete', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({key}) });
+  await fetch('/admin/kv/delete', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({key}) });
   await loadAll();
 };
 S.oninput = loadAll;
@@ -430,11 +428,11 @@ TBL.addEventListener('click', async (ev)=>{
   const k=btn.getAttribute('data-k'); const act=btn.getAttribute('data-act');
   if (act==='save'){
     const ta=TBL.querySelector('textarea[data-k="'+k+'"]');
-    await fetch('/admin2/kv/set',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:k,value:ta.value})});
+    await fetch('/admin/kv/set', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({key:k, value: ta.value}) });
     alert('✔ Gespeichert: '+k);
   } else if (act==='del'){
     if(!confirm('Delete '+k+'?')) return;
-    await fetch('/admin2/kv/delete',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:k})});
+    await fetch('/admin/kv/delete', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({key:k}) });
     await loadAll();
   }
 });
@@ -443,14 +441,13 @@ document.getElementById('btnWriteMany').onclick = async ()=>{
   let payload=null;
   try{ payload = JSON.parse(document.getElementById('boxMany').value); }catch(e){ alert('JSON ungültig'); return; }
   if(!payload || typeof payload !== 'object') return alert('Payload fehlt.');
-  await fetch('/admin2/kv/setmany', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
+  await fetch('/admin/kv/setmany', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
   alert('✔ SetMany geschrieben'); await loadAll();
 };
-
 document.getElementById('btnImport').onclick = async ()=>{
   let payload=null;
   try{ payload = JSON.parse(document.getElementById('boxImport').value); }catch(e){ alert('JSON ungültig'); return; }
-  await fetch('/admin2/kv/import', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
+  await fetch('/admin/kv/import', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
   alert('✔ Import OK'); await loadAll();
 };
 
@@ -459,7 +456,7 @@ document.addEventListener('keydown', async (e)=>{
     const el=document.activeElement;
     if (el && el.tagName==='TEXTAREA' && el.dataset.k){
       e.preventDefault();
-      await fetch('/admin2/kv/set',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:el.dataset.k,value:el.value})});
+      await fetch('/admin/kv/set', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({key:el.dataset.k, value: el.value}) });
       el.style.outline='2px solid #29cc7a'; setTimeout(()=>el.style.outline='', 600);
     }
   }
