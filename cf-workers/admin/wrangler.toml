@@ -15,7 +15,6 @@ routes = [
   { pattern = "inpinity.online/public/*", zone_name = "inpinity.online" }
 ]
 
-# KV-Bindings: EINHEITLICH "INPI_CONFIG"
 kv_namespaces = [
   { binding = "CONFIG", id = "6dbc16b4eee148db82b66f8dbb8b6ca9" }
 ]
@@ -31,11 +30,3 @@ IP_ALLOWLIST  = ""
 CRON_BASE     = "https://inpinity.online/cron"
 OPS_HMAC_ALGO = "SHA-256"
 
-# ABSICHTLICH KEINE CONFIG_KEYS-WHITELIST
-
-# Secrets (nicht im Klartext hier):
-#   ADMIN_USER
-#   ADMIN_PASS
-# Setzen:
-#   npx wrangler secret put ADMIN_USER
-#   npx wrangler secret put ADMIN_PASS
