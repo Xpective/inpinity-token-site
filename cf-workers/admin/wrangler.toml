@@ -17,7 +17,7 @@ routes = [
 
 # KV-Bindings: EINHEITLICH "INPI_CONFIG"
 kv_namespaces = [
-  { binding = "INPI_CONFIG", id = "a82cb91c589b4b1a8c786807a49fe5f5" }
+  { binding = "CONFIG", id = "6dbc16b4eee148db82b66f8dbb8b6ca9" }
 ]
 
 [vars]
