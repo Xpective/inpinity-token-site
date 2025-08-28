@@ -1,25 +1,23 @@
-# cf-workers/admin/wrangler.toml
 # ============================================
 # INPI Admin Worker – Whitelist-frei
-# - Hauptziel: Keys im KV "CONFIG" lesen/schreiben (ohne CONFIG_KEYS-Whitelist)
+# - Hauptziel: Keys im KV "INPI_CONFIG" lesen/schreiben
 # - UI:        /admin
 # - Public:    /public/app-cfg (vom Frontend nutzbar)
 # ============================================
 
 name = "admin"
-main = "worker.js"                 # WICHTIG: exakt dein neues Admin-UI (ohne Whitelist)
+main = "worker.js"
 compatibility_date = "2024-12-01"
 
-# Die Routen müssen auf DIESEN Worker zeigen
+# Routen für Admin-UI und die öffentliche App-Konfig
 routes = [
-  { pattern = "inpinity.online/admin*",  zone_name = "inpinity.online" },
+  { pattern = "inpinity.online/admin*",   zone_name = "inpinity.online" },
   { pattern = "inpinity.online/public/*", zone_name = "inpinity.online" }
 ]
 
-# KV-Bindings
+# KV-Bindings: EINHEITLICH "INPI_CONFIG"
 kv_namespaces = [
-  # CONFIG = Projekt-Konfiguration (alle Keys hier rein)
-  { binding = "CONFIG", id = "a82cb91c589b4b1a8c786807a49fe5f5" }
+  { binding = "INPI_CONFIG", id = "a82cb91c589b4b1a8c786807a49fe5f5" }
 ]
 
 [vars]
@@ -33,13 +31,11 @@ IP_ALLOWLIST  = ""
 CRON_BASE     = "https://inpinity.online/cron"
 OPS_HMAC_ALGO = "SHA-256"
 
-# ABSICHTLICH NICHT DEFINIERT:
-#   CONFIG_KEYS = "..."
-# => Keine Whitelist mehr. /admin/config/set & /setmany dürfen JEDEN Key speichern.
+# ABSICHTLICH KEINE CONFIG_KEYS-WHITELIST
 
-# Secret-Variablen (NICHT hier in Klartext!):
-#   ADMIN_USER  (Basic-Auth Benutzer)
-#   ADMIN_PASS  (Basic-Auth Passwort)
-# Die legst du als Secrets:
+# Secrets (nicht im Klartext hier):
+#   ADMIN_USER
+#   ADMIN_PASS
+# Setzen:
 #   npx wrangler secret put ADMIN_USER
 #   npx wrangler secret put ADMIN_PASS
