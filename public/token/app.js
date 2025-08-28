@@ -250,6 +250,7 @@ if (p0?.parentElement) p0.parentElement.appendChild(gateBadge);
 /* ---------- State ---------- */
 let connection = null, currentRpcUrl = null, provider = null, pubkey = null, POLL = null;
 let lastDeepLinks = { contribute:null, claimNow:null };
+let listenersAttached = false;
 
 const STATE = {
   rpc_url: null, inpi_mint: null, usdc_mint: null,
@@ -536,8 +537,13 @@ function tickTGE(){
 function onConnected(publicKey){
   pubkey = publicKey;
   if (walletAddr) walletAddr.textContent = publicKey.toBase58();
-  provider?.on?.("accountChanged", (pk)=>{ if (!pk) { onDisconnected(); return; } onConnected(pk); });
-  provider?.on?.("disconnect", onDisconnected);
+
+  if (!listenersAttached) {
+    provider?.on?.("accountChanged", (pk)=>{ if (!pk) { onDisconnected(); return; } onConnected(pk); });
+    provider?.on?.("disconnect", onDisconnected);
+    listenersAttached = true;
+  }
+
   refreshBalances().catch(()=>{});
   refreshClaimStatus().catch(()=>{});
   clearInterval(POLL); POLL=setInterval(()=>{ refreshBalances(); refreshClaimStatus(); }, 30000);
@@ -561,7 +567,7 @@ if (btnHowTo){
     alert(`Kurzanleitung:
 1) Phantom verbinden
 2) Intent senden → QR oder Deep-Link für USDC-Zahlung
-3) Optional: Early-Claim (1 USDC)`);
+3) Optional: Early-Claim (1 USDC) mit Signatur bestätigen`);
   });
 }
 
